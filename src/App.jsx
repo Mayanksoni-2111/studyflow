@@ -32,262 +32,220 @@ td{padding:12px 16px;font-size:14px;}
 
  
 
-function AuthPage({ onLogin }) {
-  const [mode, setMode] = useState("login");
-  const [form, setForm] = useState({ name: "", email: "", password: "" });
-  const [err, setErr] = useState("");
 
-  const submit = () => {
-    setErr("");
-    if (!form.email.trim() || !form.password.trim()) {
-      setErr("Email and password required.");
-      return;
+// ═══════════════════════════════════════════════════════
+//  SUPABASE — official JS SDK loaded via CDN
+// ═══════════════════════════════════════════════════════
+const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
+const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
+
+// Inject the SDK script once at module load time
+if(!window.__supaLoaded){
+  window.__supaLoaded = true
+  const s = document.createElement('script')
+  s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js'
+  document.head.appendChild(s)
+}
+
+// Lazily get/create the client once the SDK has loaded
+let _client = null
+function getClient(){
+  if(_client) return _client
+  if(window.supabase?.createClient){
+    _client = window.supabase.createClient(SUPA_URL, SUPA_KEY, {
+      auth:{ persistSession:true, storageKey:'sf_supa_sess' }
+    })
+  }
+  return _client
+}
+
+// Wait up to 6 s for the CDN script to finish loading
+function waitClient(){
+  return new Promise((res,rej)=>{
+    const t0 = Date.now()
+    const poll = ()=>{
+      const c = getClient()
+      if(c) return res(c)
+      if(Date.now()-t0 > 6000) return rej(new Error('Supabase SDK did not load — check internet connection'))
+      setTimeout(poll, 100)
     }
+    poll()
+  })
+}
 
-    const users = getUsers();
+// Clean async wrappers
+const supa = {
+  async signUp(email, password, name){
+    const c = await waitClient()
+    return c.auth.signUp({ email, password, options:{ data:{ name } } })
+  },
+  async signIn(email, password){
+    const c = await waitClient()
+    return c.auth.signInWithPassword({ email, password })
+  },
+  async signOut(){
+    const c = await waitClient()
+    return c.auth.signOut()
+  },
+  async getSession(){
+    const c = await waitClient()
+    return c.auth.getSession()
+  },
+  async upsertData(userId, payload){
+    const c = await waitClient()
+    const { avatar, uploadedBg, ...safe } = payload   // skip large base64 blobs
+    return c.from('user_data').upsert(
+      { user_id: userId, data: safe, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    )
+  },
+  async fetchData(userId){
+    const c = await waitClient()
+    const { data, error } = await c.from('user_data').select('data').eq('user_id', userId).single()
+    if(error) return null
+    return data?.data || null
+  },
+}
 
-    if (mode === "signup") {
-      if (!form.name.trim()) {
-        setErr("Name required.");
-        return;
+// ── Session key (kept for backward compat; SDK manages tokens itself) ──
+const SESS = 'sf_sess'
+
+// ── Default data shape ────────────────────────────────────
+const defaultData = () => ({
+  courses:[], planner:[], sessions:[],
+  pomoBg:'lofi1', pomoSession:25, pomoBreak:5, pomoLong:15,
+  theme:'light', dailyGoal:120, weeklyGoal:600,
+  timerFont:'Sora', alertSound:'bell',
+  uploadedBg:null, spotifyUrl:'', avatar:null,
+  displayName:'', importedCalEvents:[],
+})
+
+// ── Local cache (instant reads, works offline) ────────────
+const localKey = uid => `sf_cache_${uid}`
+const getLocalCache = uid => { try { return JSON.parse(localStorage.getItem(localKey(uid))) || defaultData() } catch { return defaultData() } }
+const setLocalCache = (uid, d) => localStorage.setItem(localKey(uid), JSON.stringify(d))
+
+// ── Debounced cloud sync ──────────────────────────────────
+let _syncTimer = null
+const scheduleSync = (userId, data) => {
+  clearTimeout(_syncTimer)
+  _syncTimer = setTimeout(async () => {
+    try { await supa.upsertData(userId, data) } catch(e) {}
+  }, 1500)
+}
+
+// ── Auth Page ─────────────────────────────────────────────
+function AuthPage({onLogin}){
+  const[mode,setMode]=useState('login')
+  const[form,setForm]=useState({name:'',email:'',password:''})
+  const[err,setErr]=useState('')
+  const[loading,setLoading]=useState(false)
+  const[sdkReady,setSdkReady]=useState(false)
+
+  // Wait for SDK, then check existing session
+  useEffect(()=>{
+    waitClient().then(async c => {
+      setSdkReady(true)
+      // Restore existing session if still valid
+      const { data:{ session } } = await c.auth.getSession()
+      if(session?.user){
+        const uid = session.user.id
+        const name = session.user.user_metadata?.name || session.user.email.split('@')[0]
+        const user = { id:uid, email:session.user.email, name }
+        let d = null
+        try { d = await supa.fetchData(uid) } catch(e){}
+        const localD = getLocalCache(uid)
+        const finalD = d || (localD.courses?.length ? localD : defaultData())
+        setLocalCache(uid, finalD)
+        onLogin(user, finalD)
       }
-      if (users.find((u) => u.email === form.email)) {
-        setErr("Account already exists.");
-        return;
+    }).catch(e => setErr('Could not load Supabase SDK. Check your internet connection.'))
+  },[])
+
+  const submit = async () => {
+    setErr('')
+    if(!form.email.trim() || !form.password.trim()){ setErr('Email and password required.'); return }
+    setLoading(true)
+    try {
+      if(mode === 'signup'){
+        if(!form.name.trim()){ setErr('Name required.'); setLoading(false); return }
+        const { data, error } = await supa.signUp(form.email.trim(), form.password, form.name.trim())
+        if(error){ setErr(error.message); setLoading(false); return }
+        if(data?.session){
+          // Email confirmation disabled — logged in immediately
+          const uid = data.user.id
+          const user = { id:uid, email:data.user.email, name:form.name.trim() }
+          await supa.upsertData(uid, defaultData())
+          setLocalCache(uid, defaultData())
+          onLogin(user, defaultData())
+        } else {
+          setErr('Account created! Check your email to confirm, then log in.')
+        }
+      } else {
+        const { data, error } = await supa.signIn(form.email.trim(), form.password)
+        if(error){ setErr(error.message); setLoading(false); return }
+        const uid = data.user.id
+        const name = data.user.user_metadata?.name || data.user.email.split('@')[0]
+        const user = { id:uid, email:data.user.email, name }
+        let cloudD = null
+        try { cloudD = await supa.fetchData(uid) } catch(e){}
+        const localD = getLocalCache(uid)
+        const finalD = cloudD || (localD.courses?.length ? localD : defaultData())
+        setLocalCache(uid, finalD)
+        onLogin(user, finalD)
       }
-      const u = {
-        name: form.name.trim(),
-        email: form.email.trim(),
-        password: form.password,
-      };
-      saveUsers([...users, u]);
-      onLogin(u);
-    } else {
-      const u = users.find(
-        (u) => u.email === form.email && u.password === form.password
-      );
-      if (!u) {
-        setErr("Invalid email or password.");
-        return;
-      }
-      onLogin(u);
+    } catch(e){
+      setErr(e?.message || 'Something went wrong. Please try again.')
     }
-  };
+    setLoading(false)
+  }
 
-  const inputStyle = {
-    width: "100%",
-    padding: "12px 14px",
-    marginBottom: 14,
-    borderRadius: 12,
-    border: "1px solid rgba(255,255,255,0.4)",
-    background: "rgba(255,255,255,0.15)",
-    color: "#ffffff",
-    outline: "none",
-    fontSize: 15,
-    fontWeight: 500,
-    backdropFilter: "blur(8px)",
-  };
+  const inp = {
+    width:'100%', padding:'12px 14px', marginBottom:14,
+    borderRadius:12, border:'1px solid rgba(255,255,255,0.4)',
+    background:'rgba(255,255,255,0.15)', color:'#ffffff',
+    outline:'none', fontSize:15, fontWeight:500, backdropFilter:'blur(8px)',
+  }
 
-  return (
-    <div
-      style={{
-        minHeight: "100vh",
-        position: "relative",
-        background:
-          "linear-gradient(135deg, #667eea 0%, #764ba2 50%, #43c6ac 100%)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: 20,
-        fontFamily: "Sora, sans-serif",
-        overflow: "hidden",
-      }}
-    >
-      
-
-      {/* CARD */}
-      <div
-        style={{
-          width: 400,
-          maxWidth: "100%",
-          padding: 35,
-          borderRadius: 24,
-          background: "rgba(255,255,255,0.1)",
-          backdropFilter: "blur(20px)",
-          border: "1px solid rgba(255,255,255,0.2)",
-          boxShadow: "0 25px 60px rgba(0,0,0,0.3)",
-          color: "white",
-          animation: "fadeIn 0.6s ease",
-        }}
-      >
-        {/* HEADER */}
-        <div style={{ textAlign: "center", marginBottom: 25 }}>
-          <div style={{ fontSize: 42 }}>📚</div>
-          <h1 style={{ fontSize: 28, fontWeight: 800 }}>StudyFlow</h1>
-          <p style={{ fontSize: 13, opacity: 0.7 }}>
-            Focus • Track • Improve
-          </p>
+  return(
+    <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#667eea 0%,#764ba2 50%,#43c6ac 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20,fontFamily:'Sora,sans-serif'}}>
+      <div style={{width:400,maxWidth:'100%',padding:35,borderRadius:24,background:'rgba(255,255,255,0.1)',backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.2)',boxShadow:'0 25px 60px rgba(0,0,0,0.3)',color:'white',animation:'fadeIn 0.6s ease'}}>
+        <div style={{textAlign:'center',marginBottom:25}}>
+          <div style={{fontSize:42}}>📚</div>
+          <h1 style={{fontSize:28,fontWeight:800}}>StudyFlow</h1>
+          <p style={{fontSize:13,opacity:0.7}}>Focus • Track • Improve</p>
         </div>
-
-        {/* MODE SWITCH */}
-        <div
-          style={{
-            display: "flex",
-            background: "rgba(255,255,255,0.1)",
-            borderRadius: 50,
-            padding: 4,
-            marginBottom: 20,
-          }}
-        >
-          {["login", "signup"].map((m) => (
-            <button
-              key={m}
-              onClick={() => {
-                setMode(m);
-                setErr("");
-              }}
-              style={{
-                flex: 1,
-                padding: 10,
-                border: "none",
-                borderRadius: 50,
-                cursor: "pointer",
-                fontWeight: 600,
-                background: mode === m ? "white" : "transparent",
-                color: mode === m ? "#333" : "white",
-                transition: "0.3s",
-              }}
-            >
-              {m === "login" ? "Login" : "Sign Up"}
-            </button>
-          ))}
-        </div>
-
-        {/* INPUTS */}
-        {mode === "signup" && (
-          <input
-            value={form.name}
-            onChange={(e) =>
-              setForm({ ...form, name: e.target.value })
-            }
-            placeholder="Full Name"
-            style={inputStyle}
-          />
-        )}
-
-        <input
-          type="email"
-          value={form.email}
-          onChange={(e) =>
-            setForm({ ...form, email: e.target.value })
-          }
-          placeholder="Email"
-          style={inputStyle}
-        />
-
-        <input
-          type="password"
-          value={form.password}
-          onChange={(e) =>
-            setForm({ ...form, password: e.target.value })
-          }
-          onKeyDown={(e) => e.key === "Enter" && submit()}
-          placeholder="Password"
-          style={inputStyle}
-        />
-
-        {/* ERROR */}
-        {err && (
-          <div
-            style={{
-              background: "rgba(255,0,80,0.2)",
-              padding: 10,
-              borderRadius: 10,
-              fontSize: 13,
-              marginBottom: 15,
-            }}
-          >
-            {err}
+        {!sdkReady ? (
+          <div style={{textAlign:'center',padding:'30px 0',opacity:0.8}}>
+            <div style={{fontSize:28,marginBottom:10}}>⏳</div>
+            <p style={{fontSize:14}}>Connecting to server...</p>
           </div>
+        ) : (
+          <>
+            <div style={{display:'flex',background:'rgba(255,255,255,0.1)',borderRadius:50,padding:4,marginBottom:20}}>
+              {['login','signup'].map(m=>(
+                <button key={m} onClick={()=>{setMode(m);setErr('')}} style={{flex:1,padding:10,border:'none',borderRadius:50,cursor:'pointer',fontWeight:600,background:mode===m?'white':'transparent',color:mode===m?'#333':'white',transition:'0.3s',fontFamily:'Sora'}}>
+                  {m==='login'?'Login':'Sign Up'}
+                </button>
+              ))}
+            </div>
+            {mode==='signup'&&<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Full Name" style={inp}/>}
+            <input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="Email" style={inp}/>
+            <input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()} placeholder="Password" style={inp}/>
+            {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{err}</div>}
+            <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora'}}>
+              {loading?'⏳ Please wait...':(mode==='login'?'Login →':'Create Account →')}
+            </button>
+            <p style={{textAlign:'center',fontSize:12,opacity:0.6,marginTop:15}}>☁️ Data syncs across all your devices</p>
+          </>
         )}
-
-        {/* BUTTON */}
-        <button
-          onClick={submit}
-          style={{
-            width: "100%",
-            padding: 14,
-            borderRadius: 50,
-            border: "none",
-            background:
-              "linear-gradient(135deg,#6C63FF,#43C6AC)",
-            color: "white",
-            fontWeight: 700,
-            fontSize: 15,
-            cursor: "pointer",
-            transition: "0.3s",
-          }}
-          onMouseEnter={(e) =>
-            (e.currentTarget.style.transform = "scale(1.05)")
-          }
-          onMouseLeave={(e) =>
-            (e.currentTarget.style.transform = "scale(1)")
-          }
-        >
-          {mode === "login"
-            ? "Login →"
-            : "Create Account →"}
-        </button>
-
-        <p
-          style={{
-            textAlign: "center",
-            fontSize: 12,
-            opacity: 0.6,
-            marginTop: 15,
-          }}
-        >
-          🔒 Data stays on your device
-        </p>
       </div>
-
-      {/* CSS */}
-      <style>
-        {`
-          @keyframes fadeIn {
-            from {opacity:0; transform:translateY(20px);}
-            to {opacity:1; transform:translateY(0);}
-          }
-
-          @keyframes float {
-            0% { transform: translateY(0px); }
-            50% { transform: translateY(-15px); }
-            100% { transform: translateY(0px); }
-          }
-
-          input::placeholder {
-            color: rgba(255,255,255,0.6);
-          }
-        `}
-      </style>
+      <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} input::placeholder{color:rgba(255,255,255,0.6)}`}</style>
     </div>
-  );
+  )
 }
 
-// Orb helper
-function orbStyle(top, side, size, right = false) {
-  return {
-    position: "absolute",
-    top: top,
-    [right ? "right" : "left"]: side,
-    width: size,
-    height: size,
-    borderRadius: "50%",
-    background: "rgba(255,255,255,0.15)",
-    filter: "blur(70px)",
-    animation: "float 6s ease-in-out infinite",
-  };
-}
+/* ════════ LAYOUT ════════ */
 /* ── THEMES ── */
 const THEMES={
   light:{name:'Light',emoji:'☀️','--bg':'#F4F3FF','--card':'#FFFFFF','--text':'#1a1a2e','--text2':'#6b6b8a','--border':'#EEECFF','--hover':'#FAFAFE','--sidebar':'#FFFFFF','--input':'#F4F3FF','--shadow':'0 2px 16px rgba(108,99,255,0.08)','--primary':'#6C63FF','--success':'#43C6AC','--warning':'#FFB347',sidebarEmoji:'📚',sidebarBg:'#FFFFFF',sidebarDark:false},
@@ -309,270 +267,47 @@ function applyTheme(key){
 }
 
 /* ════════ THEME CHARACTER ════════ */
-const THEME_CHARACTERS = {
-  light: {
-    emoji: '📚',
-    name: 'Bookworm Buddy',
-    chars: ['📚','✏️','🎒','📐','🌟'],
-    colors: ['#6C63FF','#A78BFA','#43C6AC','#FFB347','#F472B6'],
-    bg: 'linear-gradient(135deg,#F4F3FF,#E8E6FF)',
-    border: '#C4C0FF',
-    message: 'Keep studying, superstar!',
-    animation: 'bounce',
-  },
-  dark: {
-    emoji: '🌙',
-    name: 'Night Owl',
-    chars: ['🦉','🌙','⭐','💫','🔭'],
-    colors: ['#7B74FF','#A78BFA','#43C6AC','#60A5FA','#F472B6'],
-    bg: 'linear-gradient(135deg,#1e1e30,#252540)',
-    border: '#3a3a5c',
-    message: 'Night grind mode: ON',
-    animation: 'float',
-  },
-   batman:{
-    emoji:'🦇',
-    name:'Dark Knight',
-    chars:['🦇','🌃','🌑','⚡','🖤'],
-    colors:['#f0e060','#a09830','#f0e060','#c8b800','#ff8800'],
-    bg:'linear-gradient(135deg,#0a0a0f,#1a1a08)',
-    border:'#f0e06033',
-    message:'I am Batman.',
-    animation:'float',
-  },
- 
-  avengers: {
-    emoji: '🛡️',
-    name: 'Study Avenger',
-    chars: ['🛡️','⚡','🔴','🦾','🪖'],
-    colors: ['#c62828','#1565c0','#f9a825','#c62828','#1565c0'],
-    bg: 'linear-gradient(135deg,#0d1117,#1c2128)',
-    border: '#c6282844',
-    message: 'Avengers... STUDY!',
-    animation: 'assemble',
-  },
-  barbie: {
-    emoji: '💖',
-    name: 'Study Barbie',
-    chars: ['💖','👛','✨','💅','👠'],
-    colors: ['#ff1493','#ff69b4','#ff1493','#ffb347','#ff69b4'],
-    bg: 'linear-gradient(135deg,#fff0f8,#ffd6ee)',
-    border: '#ff69b4',
-    message: 'She\'s studying, she\'s everything!',
-    animation: 'sparkle',
-  },
-  unicorn: {
-    emoji: '🦄',
-    name: 'Uni the Unicorn',
-    chars: ['🦄','🌈','⭐','🌸','💜'],
-    colors: ['#a855f7','#ec4899','#f59e0b','#a855f7','#ec4899'],
-    bg: 'linear-gradient(135deg,#fdf4ff,#f3e0ff)',
-    border: '#d8b4fe',
-    message: 'Believe in your magic! ✨',
-    animation: 'rainbow',
-  },
-  anime: {
-    emoji: '⚔️',
-    name: 'Study Protagonist',
-    chars: ['⚔️','🌸','⛩️','🔥','💢'],
-    colors: ['#ff6400','#00aa44','#ffcc00','#ff6400','#00aa44'],
-    bg: 'linear-gradient(135deg,#fff8f0,#ffe8d0)',
-    border: '#ffd0a0',
-    message: 'この試験は俺が倒す！',
-    animation: 'power-up',
-  },
-  nature: {
-    emoji: '🌿',
-    name: 'Forest Scholar',
-    chars: ['🌿','🍃','🌱','🌳','🦋'],
-    colors: ['#2e7d32','#43a047','#66bb6a','#2e7d32','#43a047'],
-    bg: 'linear-gradient(135deg,#f0f7f0,#e0f0e0)',
-    border: '#a5d6a7',
-    message: 'Grow like a tree 🌱',
-    animation: 'sway',
-  },
-  cars: {
-    emoji: '🏎️',
-    name: 'Speed Learner',
-    chars: ['🏎️','🏁','🔥','⚡','💨'],
-    colors: ['#ff3200','#00ff88','#ffcc00','#ff3200','#00ff88'],
-    bg: 'linear-gradient(135deg,#0a0a0a,#1e1e1e)',
-    border: '#ff320044',
-    message: 'FULL THROTTLE STUDYING!',
-    animation: 'zoom',
-  },
+const THEME_CHARACTERS={
+  light:{emoji:'📚',name:'Bookworm Buddy',chars:['📚','✏️','🎒','📐','🌟'],colors:['#6C63FF','#A78BFA','#43C6AC','#FFB347','#F472B6'],bg:'linear-gradient(135deg,#F4F3FF,#E8E6FF)',border:'#C4C0FF',message:'Keep studying, superstar!',animation:'bounce'},
+  dark:{emoji:'🌙',name:'Night Owl',chars:['🦉','🌙','⭐','💫','🔭'],colors:['#7B74FF','#A78BFA','#43C6AC','#60A5FA','#F472B6'],bg:'linear-gradient(135deg,#1e1e30,#252540)',border:'#3a3a5c',message:'Night grind mode: ON',animation:'float'},
+  batman:{emoji:'🦇',name:'Dark Knight',chars:['🦇','🌃','🌑','⚡','🖤'],colors:['#f0e060','#a09830','#f0e060','#c8b800','#ff8800'],bg:'linear-gradient(135deg,#0a0a0f,#1a1a08)',border:'#f0e06033',message:'I am Batman.',animation:'float'},
+  avengers:{emoji:'🛡️',name:'Study Avenger',chars:['🛡️','⚡','🔴','🦾','🪖'],colors:['#c62828','#1565c0','#f9a825','#c62828','#1565c0'],bg:'linear-gradient(135deg,#0d1117,#1c2128)',border:'#c6282844',message:'Avengers... STUDY!',animation:'assemble'},
+  barbie:{emoji:'💖',name:'Study Barbie',chars:['💖','👛','✨','💅','👠'],colors:['#ff1493','#ff69b4','#ff1493','#ffb347','#ff69b4'],bg:'linear-gradient(135deg,#fff0f8,#ffd6ee)',border:'#ff69b4',message:"She's studying, she's everything!",animation:'sparkle'},
+  unicorn:{emoji:'🦄',name:'Uni the Unicorn',chars:['🦄','🌈','⭐','🌸','💜'],colors:['#a855f7','#ec4899','#f59e0b','#a855f7','#ec4899'],bg:'linear-gradient(135deg,#fdf4ff,#f3e0ff)',border:'#d8b4fe',message:'Believe in your magic! ✨',animation:'rainbow'},
+  anime:{emoji:'⚔️',name:'Study Protagonist',chars:['⚔️','🌸','⛩️','🔥','💢'],colors:['#ff6400','#00aa44','#ffcc00','#ff6400','#00aa44'],bg:'linear-gradient(135deg,#fff8f0,#ffe8d0)',border:'#ffd0a0',message:'この試験は俺が倒す！',animation:'power-up'},
+  nature:{emoji:'🌿',name:'Forest Scholar',chars:['🌿','🍃','🌱','🌳','🦋'],colors:['#2e7d32','#43a047','#66bb6a','#2e7d32','#43a047'],bg:'linear-gradient(135deg,#f0f7f0,#e0f0e0)',border:'#a5d6a7',message:'Grow like a tree 🌱',animation:'sway'},
+  cars:{emoji:'🏎️',name:'Speed Learner',chars:['🏎️','🏁','🔥','⚡','💨'],colors:['#ff3200','#00ff88','#ffcc00','#ff3200','#00ff88'],bg:'linear-gradient(135deg,#0a0a0a,#1e1e1e)',border:'#ff320044',message:'FULL THROTTLE STUDYING!',animation:'zoom'},
 }
 
-function ThemeCharacter({ theme }) {
-  const cfg = THEME_CHARACTERS[theme] || THEME_CHARACTERS.light
-  const T = THEMES[theme] || THEMES.light
-
-  return (
-    <div style={{
-      marginTop: 32,
-      borderRadius: 24,
-      border: `2px solid ${cfg.border}`,
-      background: cfg.bg,
-      padding: '28px 24px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: 28,
-      overflow: 'hidden',
-      position: 'relative',
-    }}>
+function ThemeCharacter({theme}){
+  const cfg=THEME_CHARACTERS[theme]||THEME_CHARACTERS.light
+  const T=THEMES[theme]||THEMES.light
+  return(
+    <div style={{marginTop:32,borderRadius:24,border:`2px solid ${cfg.border}`,background:cfg.bg,padding:'28px 24px',display:'flex',alignItems:'center',gap:28,overflow:'hidden',position:'relative'}}>
       <style>{`
-        @keyframes tc-bounce {
-          0%,100%{transform:translateY(0) rotate(0deg)}
-          25%{transform:translateY(-18px) rotate(-8deg)}
-          75%{transform:translateY(-8px) rotate(6deg)}
-        }
-        @keyframes tc-float {
-          0%,100%{transform:translateY(0)}
-          50%{transform:translateY(-16px)}
-        }
-        @keyframes tc-bat-fly {
-          0%{transform:translateX(0) rotate(0deg) scaleX(1)}
-          25%{transform:translateX(10px) rotate(8deg) scaleX(1)}
-          50%{transform:translateX(0) rotate(0deg) scaleX(-1)}
-          75%{transform:translateX(-10px) rotate(-8deg) scaleX(-1)}
-          100%{transform:translateX(0) rotate(0deg) scaleX(1)}
-        }
-        @keyframes tc-assemble {
-          0%,100%{transform:scale(1) rotate(0deg)}
-          50%{transform:scale(1.15) rotate(5deg)}
-        }
-        @keyframes tc-sparkle {
-          0%,100%{transform:scale(1) rotate(0deg)}
-          25%{transform:scale(1.2) rotate(-10deg)}
-          75%{transform:scale(1.1) rotate(10deg)}
-        }
-        @keyframes tc-rainbow {
-          0%{filter:hue-rotate(0deg)}
-          100%{filter:hue-rotate(360deg)}
-        }
-        @keyframes tc-power-up {
-          0%,100%{transform:scale(1) translateY(0)}
-          50%{transform:scale(1.3) translateY(-12px)}
-        }
-        @keyframes tc-sway {
-          0%,100%{transform:rotate(-6deg)}
-          50%{transform:rotate(6deg)}
-        }
-        @keyframes tc-zoom {
-          0%{transform:translateX(-8px) skewX(-5deg)}
-          50%{transform:translateX(8px) skewX(5deg)}
-          100%{transform:translateX(-8px) skewX(-5deg)}
-        }
-        @keyframes tc-drift {
-          0%{transform:translateX(0) translateY(0)}
-          33%{transform:translateX(8px) translateY(-6px)}
-          66%{transform:translateX(-6px) translateY(4px)}
-          100%{transform:translateX(0) translateY(0)}
-        }
-        @keyframes tc-fade-slide {
-          0%,100%{opacity:0.5;transform:translateY(4px)}
-          50%{opacity:1;transform:translateY(0)}
-        }
+        @keyframes tc-bounce{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-18px) rotate(-8deg)}75%{transform:translateY(-8px) rotate(6deg)}}
+        @keyframes tc-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-16px)}}
+        @keyframes tc-assemble{0%,100%{transform:scale(1) rotate(0deg)}50%{transform:scale(1.15) rotate(5deg)}}
+        @keyframes tc-sparkle{0%,100%{transform:scale(1) rotate(0deg)}25%{transform:scale(1.2) rotate(-10deg)}75%{transform:scale(1.1) rotate(10deg)}}
+        @keyframes tc-rainbow{0%{filter:hue-rotate(0deg)}100%{filter:hue-rotate(360deg)}}
+        @keyframes tc-power-up{0%,100%{transform:scale(1) translateY(0)}50%{transform:scale(1.3) translateY(-12px)}}
+        @keyframes tc-sway{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
+        @keyframes tc-zoom{0%{transform:translateX(-8px) skewX(-5deg)}50%{transform:translateX(8px) skewX(5deg)}100%{transform:translateX(-8px) skewX(-5deg)}}
+        @keyframes tc-drift{0%{transform:translateX(0) translateY(0)}33%{transform:translateX(8px) translateY(-6px)}66%{transform:translateX(-6px) translateY(4px)}100%{transform:translateX(0) translateY(0)}}
       `}</style>
-
-      {/* Big main character */}
-      <div style={{
-        fontSize: 80,
-        lineHeight: 1,
-        flexShrink: 0,
-        animation: `tc-${cfg.animation} 2.5s ease-in-out infinite`,
-        filter: 'drop-shadow(0 8px 16px rgba(0,0,0,0.18))',
-        userSelect: 'none',
-      }}>
-        {cfg.chars[0]}
-      </div>
-
-      {/* Text block */}
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontSize: 11,
-          fontWeight: 700,
-          textTransform: 'uppercase',
-          letterSpacing: 1.5,
-          color: T['--primary'],
-          marginBottom: 4,
-          fontFamily: 'Sora, sans-serif',
-          opacity: 0.8,
-        }}>
-          {cfg.name}
-        </div>
-        <div style={{
-          fontSize: 20,
-          fontWeight: 800,
-          color: T['--text'],
-          fontFamily: 'Sora, sans-serif',
-          marginBottom: 10,
-          lineHeight: 1.3,
-        }}>
-          {cfg.message}
-        </div>
-        {/* Floating mini chars */}
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          {cfg.chars.slice(1).map((ch, i) => (
-            <div key={i} style={{
-              fontSize: 28,
-              animation: `tc-drift ${2 + i * 0.4}s ease-in-out ${i * 0.3}s infinite`,
-              userSelect: 'none',
-              filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.12))',
-            }}>
-              {ch}
-            </div>
-          ))}
+      <div style={{fontSize:80,lineHeight:1,flexShrink:0,animation:`tc-${cfg.animation} 2.5s ease-in-out infinite`,filter:'drop-shadow(0 8px 16px rgba(0,0,0,0.18))',userSelect:'none'}}>{cfg.chars[0]}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:1.5,color:T['--primary'],marginBottom:4,fontFamily:'Sora,sans-serif',opacity:0.8}}>{cfg.name}</div>
+        <div style={{fontSize:20,fontWeight:800,color:T['--text'],fontFamily:'Sora,sans-serif',marginBottom:10,lineHeight:1.3}}>{cfg.message}</div>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          {cfg.chars.slice(1).map((ch,i)=><div key={i} style={{fontSize:28,animation:`tc-drift ${2+i*0.4}s ease-in-out ${i*0.3}s infinite`,userSelect:'none',filter:'drop-shadow(0 2px 6px rgba(0,0,0,0.12))'}}>{ch}</div>)}
         </div>
       </div>
-
-      {/* Decorative floating orbs */}
-      {[0, 1, 2, 3].map((i) => (
-        <div key={i} style={{
-          position: 'absolute',
-          width: [60, 40, 80, 30][i],
-          height: [60, 40, 80, 30][i],
-          borderRadius: '50%',
-          background: cfg.colors[i % cfg.colors.length],
-          opacity: 0.08,
-          top: ['10%', '60%', '-20%', '70%'][i],
-          right: [`${8 + i * 8}%`],
-          animation: `tc-float ${3 + i}s ease-in-out ${i * 0.5}s infinite`,
-          pointerEvents: 'none',
-        }} />
-      ))}
-
-      {/* Theme label badge */}
-      <div style={{
-        position: 'absolute',
-        top: 16,
-        right: 16,
-        background: T['--primary'],
-        color: 'white',
-        borderRadius: 50,
-        padding: '4px 12px',
-        fontSize: 11,
-        fontWeight: 700,
-        fontFamily: 'Sora, sans-serif',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 5,
-        boxShadow: `0 4px 14px ${T['--primary']}44`,
-      }}>
-        {T.emoji} {T.name}
-      </div>
+      {[0,1,2,3].map(i=><div key={i} style={{position:'absolute',width:[60,40,80,30][i],height:[60,40,80,30][i],borderRadius:'50%',background:cfg.colors[i%cfg.colors.length],opacity:0.08,top:['10%','60%','-20%','70%'][i],right:`${8+i*8}%`,animation:`tc-float ${3+i}s ease-in-out ${i*0.5}s infinite`,pointerEvents:'none'}}/>)}
+      <div style={{position:'absolute',top:16,right:16,background:T['--primary'],color:'white',borderRadius:50,padding:'4px 12px',fontSize:11,fontWeight:700,fontFamily:'Sora,sans-serif',display:'flex',alignItems:'center',gap:5,boxShadow:`0 4px 14px ${T['--primary']}44`}}>{T.emoji} {T.name}</div>
     </div>
   )
 }
-
-/* ── Storage ── */
-const SESS='sf_sess'
-const dataKey=e=>`sf_data_${e}`
-const getUsers=()=>JSON.parse(localStorage.getItem('sf_users')||'[]')
-const saveUsers=u=>localStorage.setItem('sf_users',JSON.stringify(u))
-const defaultData=()=>({courses:[],planner:[],sessions:[],pomoBg:'lofi1',pomoSession:25,pomoBreak:5,pomoLong:15,theme:'light',dailyGoal:120,weeklyGoal:600,timerFont:'Sora',alertSound:'bell',uploadedBg:null,spotifyUrl:'',avatar:null,displayName:'',importedCalEvents:[]})
-const getData=e=>{try{return JSON.parse(localStorage.getItem(dataKey(e)))||defaultData()}catch{return defaultData()}}
-const saveData=(e,d)=>localStorage.setItem(dataKey(e),JSON.stringify(d))
 
 /* ── IndexedDB ── */
 const IDB_NAME='studyflow_pdfs',IDB_STORE='pdfs'
@@ -604,11 +339,7 @@ function ThemePicker({currentTheme,onSelect,onClose}){
             {Object.entries(THEMES).map(([key,t])=>{
               const isActive=currentTheme===key
               return(
-                <div key={key} onClick={()=>{onSelect(key);onClose()}}
-                  style={{borderRadius:16,overflow:'hidden',cursor:'pointer',border:`3px solid ${isActive?t['--primary']:'transparent'}`,transition:'all 0.2s',transform:isActive?'scale(1.03)':'scale(1)'}}
-                  onMouseEnter={e=>!isActive&&(e.currentTarget.style.transform='scale(1.02)')}
-                  onMouseLeave={e=>!isActive&&(e.currentTarget.style.transform='scale(1)')}>
-                  {/* Preview */}
+                <div key={key} onClick={()=>{onSelect(key);onClose()}} style={{borderRadius:16,overflow:'hidden',cursor:'pointer',border:`3px solid ${isActive?t['--primary']:'transparent'}`,transition:'all 0.2s',transform:isActive?'scale(1.03)':'scale(1)'}} onMouseEnter={e=>!isActive&&(e.currentTarget.style.transform='scale(1.02)')} onMouseLeave={e=>!isActive&&(e.currentTarget.style.transform='scale(1)')}>
                   <div style={{height:70,background:t['--bg'],position:'relative',overflow:'hidden'}}>
                     <div style={{position:'absolute',left:0,top:0,bottom:0,width:24,background:t.sidebarBg||t['--sidebar'],display:'flex',flexDirection:'column',padding:'6px 3px',gap:3}}>
                       {[1,2,3].map(i=><div key={i} style={{height:3,borderRadius:99,background:t['--primary'],opacity:i===1?0.9:0.3,width:i===1?'80%':'60%'}}/>)}
@@ -655,10 +386,8 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   const totalChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).length,0),0)
   const doneChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).filter(ch=>ch.done).length,0),0)
   const T=THEMES[data.theme||'light']||THEMES.light
-
   const handleAvatar=e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=ev=>saveD({...data,avatar:ev.target.result});r.readAsDataURL(file)}
-  const saveName=()=>{if(!name.trim())return;const users=getUsers();saveUsers(users.map(u=>u.email===user.email?{...u,name:name.trim()}:u));saveD({...data,displayName:name.trim()});onNameChange(name.trim());setSaved(true);setTimeout(()=>setSaved(false),2000)}
-
+  const saveName=()=>{if(!name.trim())return;saveD({...data,displayName:name.trim()});onNameChange(name.trim());setSaved(true);setTimeout(()=>setSaved(false),2000)}
   const exportICSFile=()=>{
     const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//StudyFlow//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH']
     let count=0
@@ -668,7 +397,6 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
     const blob=new Blob([lines.join('\r\n')],{type:'text/calendar'})
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='studyflow_exams.ics';a.click();URL.revokeObjectURL(url)
   }
-
   const handleICSImport=e=>{
     const file=e.target.files[0];if(!file)return
     const r=new FileReader()
@@ -681,15 +409,11 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
           if(summary&&dtstart){const raw=dtstart.replace(/[TZ]/g,'').slice(0,8);const date=raw.length===8?`${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}`:'';if(date)events.push({summary,date})}
         })
         if(events.length===0){setImportMsg('❌ No events found.');return}
-        saveD({...data,importedCalEvents:events})
-        setImportMsg(`✅ Imported ${events.length} events!`)
-        setTimeout(()=>setImportMsg(''),4000)
+        saveD({...data,importedCalEvents:events});setImportMsg(`✅ Imported ${events.length} events!`);setTimeout(()=>setImportMsg(''),4000)
       }catch{setImportMsg('❌ Could not read file.')}
     }
-    r.readAsText(file)
-    if(icsImportRef.current)icsImportRef.current.value=''
+    r.readAsText(file);if(icsImportRef.current)icsImportRef.current.value=''
   }
-
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={onClose}>
       <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:500,maxWidth:'95vw',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 32px 80px rgba(0,0,0,0.3)'}} onClick={e=>e.stopPropagation()}>
@@ -702,10 +426,7 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
             <div>
               <h2 style={{fontSize:19,fontWeight:800,color:'white',marginBottom:2}}>{data.displayName||user.name}</h2>
               <p style={{fontSize:12,color:'rgba(255,255,255,0.75)'}}>{user.email}</p>
-              <div style={{display:'inline-flex',alignItems:'center',gap:5,marginTop:5,background:'rgba(255,255,255,0.15)',borderRadius:50,padding:'3px 10px'}}>
-                <span style={{fontSize:13}}>{T.emoji}</span>
-                <span style={{fontSize:11,color:'white',fontWeight:600}}>{T.name} Theme</span>
-              </div>
+              <div style={{display:'inline-flex',alignItems:'center',gap:5,marginTop:5,background:'rgba(255,255,255,0.15)',borderRadius:50,padding:'3px 10px'}}><span style={{fontSize:13}}>{T.emoji}</span><span style={{fontSize:11,color:'white',fontWeight:600}}>{T.name} Theme</span></div>
             </div>
           </div>
           <input ref={avatarRef} type="file" accept="image/*" onChange={handleAvatar} style={{display:'none'}}/>
@@ -731,29 +452,17 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
           <div style={{background:'var(--bg)',borderRadius:14,padding:16,marginBottom:20}}>
             <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:4}}>📤 Export exam dates</p>
             <p style={{fontSize:11,color:'var(--text2)',marginBottom:10,lineHeight:1.6}}>Download <strong>.ics</strong> → import into Google Calendar, Apple Calendar, or Outlook.</p>
-            <button onClick={exportICSFile} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--primary)',color:'white',border:'none',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',marginBottom:6}} onMouseEnter={e=>e.currentTarget.style.opacity='0.87'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
-              ⬇ Export to Google / Apple Calendar
-            </button>
-            <p style={{fontSize:10,color:'var(--text2)',lineHeight:1.5,marginBottom:14}}><strong>Google:</strong> calendar.google.com → + Other calendars → Import &nbsp;|&nbsp; <strong>Apple:</strong> File → Import</p>
+            <button onClick={exportICSFile} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--primary)',color:'white',border:'none',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',marginBottom:12}}>⬇ Export to Google / Apple Calendar</button>
             <div style={{borderTop:'1px solid var(--border)',paddingTop:14}}>
-              <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:4}}>📥 Import from Google / Apple</p>
-              <p style={{fontSize:11,color:'var(--text2)',marginBottom:8,lineHeight:1.6}}>Export your calendar as <strong>.ics</strong> → upload here → events show on StudyFlow calendar.</p>
-              <p style={{fontSize:10,color:'var(--text2)',marginBottom:10}}><strong>Google:</strong> Settings → Import & Export → Export &nbsp;|&nbsp; <strong>Apple:</strong> File → Export</p>
-              <button onClick={()=>icsImportRef.current?.click()} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--bg)',color:'var(--text)',border:'2px solid var(--border)',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',transition:'all 0.2s'}} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--primary)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-                ⬆ Upload .ics from Google / Apple
-              </button>
+              <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:8}}>📥 Import from Google / Apple</p>
+              <button onClick={()=>icsImportRef.current?.click()} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--bg)',color:'var(--text)',border:'2px solid var(--border)',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora'}} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--primary)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>⬆ Upload .ics from Google / Apple</button>
               <input ref={icsImportRef} type="file" accept=".ics,text/calendar" onChange={handleICSImport} style={{display:'none'}}/>
               {importMsg&&<div style={{marginTop:10,padding:'10px 14px',background:importMsg.startsWith('✅')?'rgba(67,198,172,0.12)':'rgba(255,101,132,0.12)',borderRadius:10,fontSize:13,fontWeight:500,color:importMsg.startsWith('✅')?'var(--success)':'#FF6584'}}>{importMsg}</div>}
               {(data.importedCalEvents||[]).length>0&&(
                 <div style={{marginTop:10,padding:'12px 14px',background:'var(--card)',borderRadius:10,border:'1px solid var(--border)'}}>
                   <div style={{fontSize:12,fontWeight:600,color:'var(--text)',marginBottom:6}}>{data.importedCalEvents.length} imported events</div>
                   <div style={{maxHeight:70,overflowY:'auto',display:'flex',flexDirection:'column',gap:3}}>
-                    {data.importedCalEvents.slice(0,4).map((ev,i)=>(
-                      <div key={i} style={{fontSize:11,color:'var(--text2)',display:'flex',gap:8,alignItems:'center'}}>
-                        <span style={{color:'var(--success)',flexShrink:0,fontWeight:600}}>{ev.date}</span>
-                        <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.summary}</span>
-                      </div>
-                    ))}
+                    {data.importedCalEvents.slice(0,4).map((ev,i)=><div key={i} style={{fontSize:11,color:'var(--text2)',display:'flex',gap:8,alignItems:'center'}}><span style={{color:'var(--success)',flexShrink:0,fontWeight:600}}>{ev.date}</span><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.summary}</span></div>)}
                     {data.importedCalEvents.length>4&&<div style={{fontSize:11,color:'var(--text2)'}}>+{data.importedCalEvents.length-4} more</div>}
                   </div>
                   <button onClick={()=>saveD({...data,importedCalEvents:[]})} style={{marginTop:6,background:'none',border:'none',color:'#FF6584',fontSize:11,cursor:'pointer',fontWeight:600}}>🗑 Remove imported events</button>
@@ -768,8 +477,7 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   )
 }
 
-/* ════════ LAYOUT ════════ */
-function Layout({user,page,setPage,theme,setTheme,data,saveD,children}){
+function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}){
   const[showProfile,setShowProfile]=useState(false)
   const[showThemePicker,setShowThemePicker]=useState(false)
   const[displayName,setDisplayName]=useState(data.displayName||user.name)
@@ -830,7 +538,7 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,children}){
               <div style={{fontSize:10,color:T['--primary'],fontWeight:600}}>View Profile →</div>
             </div>
           </div>
-          <div className="navitem" style={{color:'#FF6584'}} onClick={()=>{localStorage.removeItem(SESS);window.location.reload()}}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
+          <div className="navitem" style={{color:'#FF6584'}} onClick={onSignOut||(() => { localStorage.removeItem(SESS); window.location.reload() })}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
         </div>
       </div>
       <main
@@ -1735,78 +1443,92 @@ function Modal({title,children,onClose,wide}){return <div style={{position:'fixe
 
 /* ════════ ROOT ════════ */
 export default function App(){
-  const[user,setUser]=useState(()=>{try{return JSON.parse(localStorage.getItem(SESS))}catch{return null}})
+  const[user,setUser]=useState(null)         // { id, email, name }
+  const[data,setData]=useState(defaultData())
   const[page,setPage]=useState('dashboard')
   const[selCourse,setSelCourse]=useState(null)
   const[selSubject,setSelSubject]=useState(null)
-  const[data,setData]=useState(()=>user?getData(user.email):defaultData())
-  const[theme,setTheme]=useState(()=>user?getData(user.email).theme||'light':'light')
+  const[theme,setTheme]=useState('light')
+  const[ready,setReady]=useState(false)
 
-  // ── Lifted Pomodoro state — lives here so it never dies on navigation ──
+  // Lifted Pomodoro state
   const[pomoRunning,setPomoRunning]=useState(false)
-  const[pomoTimeLeft,setPomoTimeLeft]=useState((()=>{try{return (JSON.parse(localStorage.getItem(SESS))?(getData(JSON.parse(localStorage.getItem(SESS)).email).pomoSession||25):25)*60}catch{return 25*60}})())
+  const[pomoTimeLeft,setPomoTimeLeft]=useState(25*60)
   const[pomoMode,setPomoMode]=useState('pomodoro')
   const[pomoCycles,setPomoCycles]=useState(0)
 
-  useEffect(()=>{applyTheme(theme)},[theme])
-  const login=u=>{localStorage.setItem(SESS,JSON.stringify(u));setUser(u);const d=getData(u.email);setData(d);setTheme(d.theme||'light');applyTheme(d.theme||'light')}
-  const saveD=updated=>{setData(updated);saveData(user.email,updated)}
-  if(!user)return <AuthPage onLogin={login}/>
+  useEffect(()=>{ applyTheme(theme) },[theme])
+  useEffect(()=>{ setReady(true) },[])
+
+  // Called by AuthPage when login/session-restore succeeds
+  const handleLogin = (u, d) => {
+    setUser(u)
+    const finalD = d || defaultData()
+    setData(finalD)
+    setTheme(finalD.theme||'light')
+    applyTheme(finalD.theme||'light')
+    setPomoTimeLeft((finalD.pomoSession||25)*60)
+    setReady(true)
+  }
+
+  // Save: local cache first (instant), then debounced cloud sync
+  const saveD = updated => {
+    setData(updated)
+    if(user?.id){
+      setLocalCache(user.id, updated)
+      scheduleSync(user.id, updated)
+    }
+  }
+
+  // Sign out via SDK
+  const signOut = async () => {
+    try { await supa.signOut() } catch(e){}
+    setUser(null)
+    setData(defaultData())
+    setPage('dashboard')
+  }
+
+  if(!ready) return(
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F4F3FF'}}>
+      <div style={{textAlign:'center'}}>
+        <div style={{fontSize:48,marginBottom:12}}>📚</div>
+        <div style={{fontFamily:'Sora',fontWeight:700,color:'#6C63FF',fontSize:16}}>Loading StudyFlow...</div>
+      </div>
+    </div>
+  )
+
+  if(!user) return <AuthPage onLogin={handleLogin}/>
 
   const pomoProps={
-    user,data,saveD,
-    running:pomoRunning,setRunning:setPomoRunning,
-    timeLeft:pomoTimeLeft,setTimeLeft:setPomoTimeLeft,
-    mode:pomoMode,setMode:setPomoMode,
-    cycles:pomoCycles,setCycles:setPomoCycles,
+    user, data, saveD,
+    running:pomoRunning, setRunning:setPomoRunning,
+    timeLeft:pomoTimeLeft, setTimeLeft:setPomoTimeLeft,
+    mode:pomoMode, setMode:setPomoMode,
+    cycles:pomoCycles, setCycles:setPomoCycles,
   }
 
   const renderPage=()=>{
-    if(page==='course'&&selCourse)return <CoursePage user={user} courseId={selCourse} data={data} saveD={saveD} setPage={setPage} setSelSubject={setSelSubject}/>
-    if(page==='subject'&&selSubject)return <SubjectPage user={user} subjectId={selSubject.subjectId} courseId={selSubject.courseId} data={data} saveD={saveD} setPage={setPage}/>
-    if(page==='progress')return <ProgressPage user={user} data={data} setPage={setPage} setSelCourse={setSelCourse}/>
-    if(page==='courses')return <CoursesPage user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse}/>
+    if(page==='course'&&selCourse) return <CoursePage user={user} courseId={selCourse} data={data} saveD={saveD} setPage={setPage} setSelSubject={setSelSubject}/>
+    if(page==='subject'&&selSubject) return <SubjectPage user={user} subjectId={selSubject.subjectId} courseId={selSubject.courseId} data={data} saveD={saveD} setPage={setPage}/>
+    if(page==='progress') return <ProgressPage user={user} data={data} setPage={setPage} setSelCourse={setSelCourse}/>
+    if(page==='courses') return <CoursesPage user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse}/>
     return <Dashboard user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse} setSelSubject={setSelSubject}/>
   }
 
-  const modeLabel=pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
+  const modeLabel = pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
 
   return(
-    <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD}>
-
-      {/* PomodoroPage is ALWAYS mounted — hidden with CSS when not on pomodoro page.
-          This means its interval/refs/state live forever and never get reset. */}
-      <div style={{
-        position:'fixed', top:0, left:0, right:0, bottom:0,
-        // When not on pomodoro page: invisible + non-interactive, but MOUNTED
-        opacity: page==='pomodoro'?1:0,
-        pointerEvents: page==='pomodoro'?'auto':'none',
-        zIndex: page==='pomodoro'?50:-1,
-        transition:'opacity 0.2s',
-      }}>
+    <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD} onSignOut={signOut}>
+      {/* PomodoroPage always mounted so timer never resets on navigation */}
+      <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,opacity:page==='pomodoro'?1:0,pointerEvents:page==='pomodoro'?'auto':'none',zIndex:page==='pomodoro'?50:-1,transition:'opacity 0.2s'}}>
         <PomodoroPage {...pomoProps}/>
       </div>
 
-      {/* Floating pill — visible on every page while timer is running */}
+      {/* Floating pill when timer is running on other pages */}
       {page!=='pomodoro'&&pomoRunning&&(
-        <div onClick={()=>setPage('pomodoro')} style={{
-          position:'fixed',bottom:28,right:28,zIndex:9999,
-          background:'linear-gradient(135deg,#6C63FF,#43C6AC)',
-          borderRadius:50,padding:'12px 22px',
-          display:'flex',alignItems:'center',gap:12,
-          boxShadow:'0 8px 32px rgba(108,99,255,0.5)',
-          cursor:'pointer',userSelect:'none',
-        }}>
-          <style>{`
-            @keyframes pomoPulse{
-              0%,100%{box-shadow:0 8px 32px rgba(108,99,255,0.5)}
-              50%{box-shadow:0 8px 48px rgba(108,99,255,0.85)}
-            }
-          `}</style>
+        <div onClick={()=>setPage('pomodoro')} style={{position:'fixed',bottom:28,right:28,zIndex:9999,background:'linear-gradient(135deg,#6C63FF,#43C6AC)',borderRadius:50,padding:'12px 22px',display:'flex',alignItems:'center',gap:12,boxShadow:'0 8px 32px rgba(108,99,255,0.5)',cursor:'pointer',userSelect:'none'}}>
           <span style={{fontSize:20}}>🍅</span>
-          <span style={{fontFamily:'Sora',fontWeight:800,fontSize:22,color:'white',letterSpacing:1,minWidth:70,textAlign:'center'}}>
-            {fmtTime(pomoTimeLeft)}
-          </span>
+          <span style={{fontFamily:'Sora',fontWeight:800,fontSize:22,color:'white',letterSpacing:1,minWidth:70,textAlign:'center'}}>{fmtTime(pomoTimeLeft)}</span>
           <div style={{display:'flex',flexDirection:'column',gap:1}}>
             <span style={{fontSize:11,color:'rgba(255,255,255,0.9)',fontWeight:700}}>{modeLabel}</span>
             <span style={{fontSize:10,color:'rgba(255,255,255,0.6)'}}>tap to open</span>
@@ -1814,7 +1536,6 @@ export default function App(){
         </div>
       )}
 
-      {/* All non-pomodoro pages */}
       {page!=='pomodoro'&&renderPage()}
     </Layout>
   )
