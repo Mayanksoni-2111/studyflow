@@ -26,7 +26,11 @@ th{text-align:left;padding:11px 16px;font-size:11px;font-weight:700;text-transfo
 td{padding:12px 16px;font-size:14px;}
 .tab-btn{padding:7px 18px;border-radius:50px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.18s;font-family:'Sora',sans-serif;}
 .cal-day{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;margin:0 auto;transition:all 0.15s;}
+.batman-bg{background-color:#f0a500;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'%3E%3Cg fill='%231a0800' opacity='0.55'%3E%3Cpath d='M20 28 Q10 18 2 22 Q8 24 10 28 Q6 26 4 30 Q10 28 14 32 Q12 36 14 40 Q18 34 20 36 Q22 34 26 40 Q28 36 26 32 Q30 28 36 30 Q34 26 36 22 Q28 18 20 28Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.4'%3E%3Cpath d='M72 52 Q64 44 58 47 Q63 49 64 52 Q61 51 60 54 Q65 52 68 56 Q66 59 68 62 Q71 57 72 59 Q73 57 76 62 Q78 59 76 56 Q79 52 84 54 Q83 51 84 47 Q78 44 72 52Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.3'%3E%3Cpath d='M82 12 Q76 6 72 9 Q76 10 76 13 Q74 12 73 14 Q76 13 78 16 Q77 18 78 20 Q80 17 81 18 Q82 17 84 20 Q85 18 84 16 Q86 13 90 14 Q89 11 90 8 Q86 5 82 12Z'/%3E%3C/g%3E%3C/svg%3E");background-size:100px 70px;}
 `;document.head.appendChild(st)
+ 
+
+ 
 
 function AuthPage({ onLogin }) {
   const [mode, setMode] = useState("login");
@@ -304,6 +308,263 @@ function applyTheme(key){
   document.body.style.color=t['--text']
 }
 
+/* ════════ THEME CHARACTER ════════ */
+const THEME_CHARACTERS = {
+  light: {
+    emoji: '📚',
+    name: 'Bookworm Buddy',
+    chars: ['📚','✏️','🎒','📐','🌟'],
+    colors: ['#6C63FF','#A78BFA','#43C6AC','#FFB347','#F472B6'],
+    bg: 'linear-gradient(135deg,#F4F3FF,#E8E6FF)',
+    border: '#C4C0FF',
+    message: 'Keep studying, superstar!',
+    animation: 'bounce',
+  },
+  dark: {
+    emoji: '🌙',
+    name: 'Night Owl',
+    chars: ['🦉','🌙','⭐','💫','🔭'],
+    colors: ['#7B74FF','#A78BFA','#43C6AC','#60A5FA','#F472B6'],
+    bg: 'linear-gradient(135deg,#1e1e30,#252540)',
+    border: '#3a3a5c',
+    message: 'Night grind mode: ON',
+    animation: 'float',
+  },
+   batman:{
+    emoji:'🦇',
+    name:'Dark Knight',
+    chars:['🦇','🌃','🌑','⚡','🖤'],
+    colors:['#f0e060','#a09830','#f0e060','#c8b800','#ff8800'],
+    bg:'linear-gradient(135deg,#0a0a0f,#1a1a08)',
+    border:'#f0e06033',
+    message:'I am Batman.',
+    animation:'float',
+  },
+ 
+  avengers: {
+    emoji: '🛡️',
+    name: 'Study Avenger',
+    chars: ['🛡️','⚡','🔴','🦾','🪖'],
+    colors: ['#c62828','#1565c0','#f9a825','#c62828','#1565c0'],
+    bg: 'linear-gradient(135deg,#0d1117,#1c2128)',
+    border: '#c6282844',
+    message: 'Avengers... STUDY!',
+    animation: 'assemble',
+  },
+  barbie: {
+    emoji: '💖',
+    name: 'Study Barbie',
+    chars: ['💖','👛','✨','💅','👠'],
+    colors: ['#ff1493','#ff69b4','#ff1493','#ffb347','#ff69b4'],
+    bg: 'linear-gradient(135deg,#fff0f8,#ffd6ee)',
+    border: '#ff69b4',
+    message: 'She\'s studying, she\'s everything!',
+    animation: 'sparkle',
+  },
+  unicorn: {
+    emoji: '🦄',
+    name: 'Uni the Unicorn',
+    chars: ['🦄','🌈','⭐','🌸','💜'],
+    colors: ['#a855f7','#ec4899','#f59e0b','#a855f7','#ec4899'],
+    bg: 'linear-gradient(135deg,#fdf4ff,#f3e0ff)',
+    border: '#d8b4fe',
+    message: 'Believe in your magic! ✨',
+    animation: 'rainbow',
+  },
+  anime: {
+    emoji: '⚔️',
+    name: 'Study Protagonist',
+    chars: ['⚔️','🌸','⛩️','🔥','💢'],
+    colors: ['#ff6400','#00aa44','#ffcc00','#ff6400','#00aa44'],
+    bg: 'linear-gradient(135deg,#fff8f0,#ffe8d0)',
+    border: '#ffd0a0',
+    message: 'この試験は俺が倒す！',
+    animation: 'power-up',
+  },
+  nature: {
+    emoji: '🌿',
+    name: 'Forest Scholar',
+    chars: ['🌿','🍃','🌱','🌳','🦋'],
+    colors: ['#2e7d32','#43a047','#66bb6a','#2e7d32','#43a047'],
+    bg: 'linear-gradient(135deg,#f0f7f0,#e0f0e0)',
+    border: '#a5d6a7',
+    message: 'Grow like a tree 🌱',
+    animation: 'sway',
+  },
+  cars: {
+    emoji: '🏎️',
+    name: 'Speed Learner',
+    chars: ['🏎️','🏁','🔥','⚡','💨'],
+    colors: ['#ff3200','#00ff88','#ffcc00','#ff3200','#00ff88'],
+    bg: 'linear-gradient(135deg,#0a0a0a,#1e1e1e)',
+    border: '#ff320044',
+    message: 'FULL THROTTLE STUDYING!',
+    animation: 'zoom',
+  },
+}
+
+function ThemeCharacter({ theme }) {
+  const cfg = THEME_CHARACTERS[theme] || THEME_CHARACTERS.light
+  const T = THEMES[theme] || THEMES.light
+
+  return (
+    <div style={{
+      marginTop: 32,
+      borderRadius: 24,
+      border: `2px solid ${cfg.border}`,
+      background: cfg.bg,
+      padding: '28px 24px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 28,
+      overflow: 'hidden',
+      position: 'relative',
+    }}>
+      <style>{`
+        @keyframes tc-bounce {
+          0%,100%{transform:translateY(0) rotate(0deg)}
+          25%{transform:translateY(-18px) rotate(-8deg)}
+          75%{transform:translateY(-8px) rotate(6deg)}
+        }
+        @keyframes tc-float {
+          0%,100%{transform:translateY(0)}
+          50%{transform:translateY(-16px)}
+        }
+        @keyframes tc-bat-fly {
+          0%{transform:translateX(0) rotate(0deg) scaleX(1)}
+          25%{transform:translateX(10px) rotate(8deg) scaleX(1)}
+          50%{transform:translateX(0) rotate(0deg) scaleX(-1)}
+          75%{transform:translateX(-10px) rotate(-8deg) scaleX(-1)}
+          100%{transform:translateX(0) rotate(0deg) scaleX(1)}
+        }
+        @keyframes tc-assemble {
+          0%,100%{transform:scale(1) rotate(0deg)}
+          50%{transform:scale(1.15) rotate(5deg)}
+        }
+        @keyframes tc-sparkle {
+          0%,100%{transform:scale(1) rotate(0deg)}
+          25%{transform:scale(1.2) rotate(-10deg)}
+          75%{transform:scale(1.1) rotate(10deg)}
+        }
+        @keyframes tc-rainbow {
+          0%{filter:hue-rotate(0deg)}
+          100%{filter:hue-rotate(360deg)}
+        }
+        @keyframes tc-power-up {
+          0%,100%{transform:scale(1) translateY(0)}
+          50%{transform:scale(1.3) translateY(-12px)}
+        }
+        @keyframes tc-sway {
+          0%,100%{transform:rotate(-6deg)}
+          50%{transform:rotate(6deg)}
+        }
+        @keyframes tc-zoom {
+          0%{transform:translateX(-8px) skewX(-5deg)}
+          50%{transform:translateX(8px) skewX(5deg)}
+          100%{transform:translateX(-8px) skewX(-5deg)}
+        }
+        @keyframes tc-drift {
+          0%{transform:translateX(0) translateY(0)}
+          33%{transform:translateX(8px) translateY(-6px)}
+          66%{transform:translateX(-6px) translateY(4px)}
+          100%{transform:translateX(0) translateY(0)}
+        }
+        @keyframes tc-fade-slide {
+          0%,100%{opacity:0.5;transform:translateY(4px)}
+          50%{opacity:1;transform:translateY(0)}
+        }
+      `}</style>
+
+      {/* Big main character */}
+      <div style={{
+        fontSize: 80,
+        lineHeight: 1,
+        flexShrink: 0,
+        animation: `tc-${cfg.animation} 2.5s ease-in-out infinite`,
+        filter: 'drop-shadow(0 8px 16px rgba(0,0,0,0.18))',
+        userSelect: 'none',
+      }}>
+        {cfg.chars[0]}
+      </div>
+
+      {/* Text block */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 11,
+          fontWeight: 700,
+          textTransform: 'uppercase',
+          letterSpacing: 1.5,
+          color: T['--primary'],
+          marginBottom: 4,
+          fontFamily: 'Sora, sans-serif',
+          opacity: 0.8,
+        }}>
+          {cfg.name}
+        </div>
+        <div style={{
+          fontSize: 20,
+          fontWeight: 800,
+          color: T['--text'],
+          fontFamily: 'Sora, sans-serif',
+          marginBottom: 10,
+          lineHeight: 1.3,
+        }}>
+          {cfg.message}
+        </div>
+        {/* Floating mini chars */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {cfg.chars.slice(1).map((ch, i) => (
+            <div key={i} style={{
+              fontSize: 28,
+              animation: `tc-drift ${2 + i * 0.4}s ease-in-out ${i * 0.3}s infinite`,
+              userSelect: 'none',
+              filter: 'drop-shadow(0 2px 6px rgba(0,0,0,0.12))',
+            }}>
+              {ch}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Decorative floating orbs */}
+      {[0, 1, 2, 3].map((i) => (
+        <div key={i} style={{
+          position: 'absolute',
+          width: [60, 40, 80, 30][i],
+          height: [60, 40, 80, 30][i],
+          borderRadius: '50%',
+          background: cfg.colors[i % cfg.colors.length],
+          opacity: 0.08,
+          top: ['10%', '60%', '-20%', '70%'][i],
+          right: [`${8 + i * 8}%`],
+          animation: `tc-float ${3 + i}s ease-in-out ${i * 0.5}s infinite`,
+          pointerEvents: 'none',
+        }} />
+      ))}
+
+      {/* Theme label badge */}
+      <div style={{
+        position: 'absolute',
+        top: 16,
+        right: 16,
+        background: T['--primary'],
+        color: 'white',
+        borderRadius: 50,
+        padding: '4px 12px',
+        fontSize: 11,
+        fontWeight: 700,
+        fontFamily: 'Sora, sans-serif',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 5,
+        boxShadow: `0 4px 14px ${T['--primary']}44`,
+      }}>
+        {T.emoji} {T.name}
+      </div>
+    </div>
+  )
+}
+
 /* ── Storage ── */
 const SESS='sf_sess'
 const dataKey=e=>`sf_data_${e}`
@@ -523,7 +784,7 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,children}){
   const handleTheme=t=>{setTheme(t);applyTheme(t);saveD({...data,theme:t})}
 
   return(
-    <div style={{display:'flex',minHeight:'100vh',background:'var(--bg)'}}>
+  <div style={{display:'flex',minHeight:'100vh',background:T['--bg']}}>
       <div style={{width:252,background:T.sidebarBg||'var(--sidebar)',borderRight:`1px solid ${isDark?'rgba(255,255,255,0.08)':'var(--border)'}`,display:'flex',flexDirection:'column',padding:'22px 14px',position:'fixed',top:0,left:0,height:'100vh',zIndex:100,overflow:'hidden',transition:'background 0.3s'}}>
         {/* Decorations */}
         {T.decoration&&(
@@ -572,10 +833,37 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,children}){
           <div className="navitem" style={{color:'#FF6584'}} onClick={()=>{localStorage.removeItem(SESS);window.location.reload()}}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
         </div>
       </div>
-      <main style={{marginLeft:252,flex:1,padding:32,minHeight:'100vh',background:'var(--bg)',transition:'background 0.3s'}}>{children}</main>
-      {showProfile&&<ProfilePanel user={user} data={data} saveD={saveD} onClose={()=>setShowProfile(false)} onNameChange={n=>setDisplayName(n)}/>}
-      {showThemePicker&&<ThemePicker currentTheme={theme} onSelect={handleTheme} onClose={()=>setShowThemePicker(false)}/>}
-    </div>
+      <main
+        className={theme==='batman'?'batman-bg':''}
+        style={{
+          marginLeft:252,
+          flex:1,
+          padding:32,
+          minHeight:'100vh',
+          background:theme==='batman'?undefined:T['--bg'],
+          transition:'background 0.3s'
+        }}>
+        {children}
+      </main>
+
+      {/* ✅ FIX: Modals are now actually rendered in the JSX */}
+      {showThemePicker&&(
+        <ThemePicker
+          currentTheme={theme}
+          onSelect={handleTheme}
+          onClose={()=>setShowThemePicker(false)}
+        />
+      )}
+      {showProfile&&(
+        <ProfilePanel
+          user={user}
+          data={data}
+          saveD={saveD}
+          onClose={()=>setShowProfile(false)}
+          onNameChange={name=>{setDisplayName(name)}}
+        />
+      )}
+ </div>
   )
 }
 
@@ -828,6 +1116,10 @@ function CoursesPage({user,data,saveD,setPage,setSelCourse}){
           })}
         </div>
       )}
+
+      {/* Theme Character — always shows below courses */}
+      <ThemeCharacter theme={data.theme || 'light'} />
+
       {modal&&<Modal title="Add New Course 📚" onClose={()=>setModal(false)}><SI label="Course Name *" placeholder="e.g. Mathematics, Physics..." value={form.name} onChange={v=>setForm({...form,name:v})}/><div style={{marginTop:14}}><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:10}}>Color</label><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{PALETTE.map(c=><div key={c} onClick={()=>setForm({...form,color:c})} style={{width:28,height:28,borderRadius:'50%',background:c,cursor:'pointer',border:form.color===c?'3px solid var(--text)':'3px solid transparent',transform:form.color===c?'scale(1.2)':'scale(1)',transition:'all 0.15s'}}/>)}</div></div><div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20}}><GBtn onClick={()=>setModal(false)}>Cancel</GBtn><Btn onClick={addCourse}>Add Course</Btn></div></Modal>}
     </div>
   )
@@ -1213,14 +1505,12 @@ function ProgressPage({user,data,setPage,setSelCourse}){
 }
 
 /* ════════ POMODORO ════════ */
-function PomodoroPage({user,data,saveD}){
-  const[mode,setMode]=useState('pomodoro')
+// Timer state (running, timeLeft, mode, cycles) is lifted to App so it
+// survives navigation. PomodoroPage receives them as props.
+function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,mode,setMode,cycles,setCycles}){
   const[session,setSession]=useState(data.pomoSession||25)
   const[breakT,setBreakT]=useState(data.pomoBreak||5)
   const[longBreak,setLongBreak]=useState(data.pomoLong||15)
-  const[timeLeft,setTimeLeft]=useState((data.pomoSession||25)*60)
-  const[running,setRunning]=useState(false)
-  const[cycles,setCycles]=useState(0)
   const[bg,setBg]=useState(data.pomoBg||'lofi1')
   const[uploadedBg,setUploadedBg]=useState(data.uploadedBg||null)
   const[spotifyUrl,setSpotifyUrl]=useState(data.spotifyUrl||'')
@@ -1232,8 +1522,11 @@ function PomodoroPage({user,data,saveD}){
   const[timerFont,setTimerFont]=useState(data.timerFont||'Sora')
   const[alertSound,setAlertSound]=useState(data.alertSound||'bell')
   const intervalRef=useRef(null)
+  const endTimeRef=useRef(null)
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
+
   useEffect(()=>{if(!running)setTimeLeft(durations[mode])},[mode,session,breakT,longBreak])
+
   const playSound=useCallback((type)=>{
     try{
       const ctx=new(window.AudioContext||window.webkitAudioContext)()
@@ -1246,19 +1539,53 @@ function PomodoroPage({user,data,saveD}){
       };(sounds[type]||sounds.bell)()
     }catch(e){}
   },[])
+
+  const handleDone=useCallback(()=>{
+    clearInterval(intervalRef.current)
+    setRunning(false)
+    endTimeRef.current=null
+    playSound(alertSound)
+    if(mode==='pomodoro'){
+      setCycles(c=>c+1)
+      saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})
+    }
+    setTimeLeft(durations[mode])
+  },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
+
+  const tick=useCallback(()=>{
+    if(!endTimeRef.current)return
+    const remaining=Math.round((endTimeRef.current-Date.now())/1000)
+    if(remaining<=0){handleDone()}
+    else{setTimeLeft(remaining)}
+  },[handleDone,setTimeLeft])
+
+  // Start/stop interval based on running prop
   useEffect(()=>{
     if(running){
-      intervalRef.current=setInterval(()=>{
-        setTimeLeft(t=>{
-          if(t<=1){clearInterval(intervalRef.current);setRunning(false);playSound(alertSound);if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})};return durations[mode]}
-          return t-1
-        })
-      },1000)
-    }else clearInterval(intervalRef.current)
+      endTimeRef.current=Date.now()+timeLeft*1000
+      intervalRef.current=setInterval(tick,500)
+    }else{
+      clearInterval(intervalRef.current)
+      // Don't null endTimeRef here — pause preserves the remaining time
+    }
     return()=>clearInterval(intervalRef.current)
-  },[running,mode,session,breakT,longBreak,alertSound])
-  const reset=()=>{setRunning(false);setTimeLeft(durations[mode])}
-  const skip=()=>{setRunning(false);setMode(m=>m==='pomodoro'?'short':'pomodoro')}
+  },[running])
+
+  // Re-sync display when tab becomes visible again
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(!document.hidden&&running&&endTimeRef.current){
+        const remaining=Math.round((endTimeRef.current-Date.now())/1000)
+        if(remaining<=0){handleDone()}
+        else{setTimeLeft(remaining)}
+      }
+    }
+    document.addEventListener('visibilitychange',onVisible)
+    return()=>document.removeEventListener('visibilitychange',onVisible)
+  },[running,handleDone,setTimeLeft])
+
+  const reset=()=>{setRunning(false);endTimeRef.current=null;setTimeLeft(durations[mode])}
+  const skip=()=>{setRunning(false);endTimeRef.current=null;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
   const getEmbedUrl=url=>{if(!url)return null;const m1=url.match(/playlist\/([a-zA-Z0-9]+)/);if(m1)return`https://open.spotify.com/embed/playlist/${m1[1]}?utm_source=generator&theme=0`;const m2=url.match(/album\/([a-zA-Z0-9]+)/);if(m2)return`https://open.spotify.com/embed/album/${m2[1]}?utm_source=generator&theme=0`;const m3=url.match(/track\/([a-zA-Z0-9]+)/);if(m3)return`https://open.spotify.com/embed/track/${m3[1]}?utm_source=generator&theme=0`;return null}
   const embedUrl=getEmbedUrl(spotifyUrl)
   const getBgStyle=()=>{if(bg==='uploaded'&&uploadedBg)return{background:`url(${uploadedBg}) center/cover`};return{background:POMO_BGS[bg]||POMO_BGS.lofi1}}
@@ -1289,7 +1616,7 @@ function PomodoroPage({user,data,saveD}){
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:8,marginBottom:44}}>
           {[['pomodoro','pomodoro'],['short','short break'],['long','long break']].map(([key,label])=>(
-            <button key={key} onClick={()=>{setMode(key);setRunning(false)}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
+            <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
               {label}
             </button>
           ))}
@@ -1412,19 +1739,83 @@ export default function App(){
   const[page,setPage]=useState('dashboard')
   const[selCourse,setSelCourse]=useState(null)
   const[selSubject,setSelSubject]=useState(null)
-  const[data,setData]=useState(()=>user?getData(user.email):{courses:[],planner:[],sessions:[],pomoBg:'gradient1',pomoSession:25,pomoBreak:5,theme:'light',dailyGoal:120,weeklyGoal:600})
+  const[data,setData]=useState(()=>user?getData(user.email):defaultData())
   const[theme,setTheme]=useState(()=>user?getData(user.email).theme||'light':'light')
+
+  // ── Lifted Pomodoro state — lives here so it never dies on navigation ──
+  const[pomoRunning,setPomoRunning]=useState(false)
+  const[pomoTimeLeft,setPomoTimeLeft]=useState((()=>{try{return (JSON.parse(localStorage.getItem(SESS))?(getData(JSON.parse(localStorage.getItem(SESS)).email).pomoSession||25):25)*60}catch{return 25*60}})())
+  const[pomoMode,setPomoMode]=useState('pomodoro')
+  const[pomoCycles,setPomoCycles]=useState(0)
+
   useEffect(()=>{applyTheme(theme)},[theme])
   const login=u=>{localStorage.setItem(SESS,JSON.stringify(u));setUser(u);const d=getData(u.email);setData(d);setTheme(d.theme||'light');applyTheme(d.theme||'light')}
   const saveD=updated=>{setData(updated);saveData(user.email,updated)}
   if(!user)return <AuthPage onLogin={login}/>
+
+  const pomoProps={
+    user,data,saveD,
+    running:pomoRunning,setRunning:setPomoRunning,
+    timeLeft:pomoTimeLeft,setTimeLeft:setPomoTimeLeft,
+    mode:pomoMode,setMode:setPomoMode,
+    cycles:pomoCycles,setCycles:setPomoCycles,
+  }
+
   const renderPage=()=>{
     if(page==='course'&&selCourse)return <CoursePage user={user} courseId={selCourse} data={data} saveD={saveD} setPage={setPage} setSelSubject={setSelSubject}/>
     if(page==='subject'&&selSubject)return <SubjectPage user={user} subjectId={selSubject.subjectId} courseId={selSubject.courseId} data={data} saveD={saveD} setPage={setPage}/>
     if(page==='progress')return <ProgressPage user={user} data={data} setPage={setPage} setSelCourse={setSelCourse}/>
-    if(page==='pomodoro')return <PomodoroPage user={user} data={data} saveD={saveD}/>
     if(page==='courses')return <CoursesPage user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse}/>
-    return <Dashboard user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse}/>
+    return <Dashboard user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse} setSelSubject={setSelSubject}/>
   }
-  return <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD}>{renderPage()}</Layout>
+
+  const modeLabel=pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
+
+  return(
+    <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD}>
+
+      {/* PomodoroPage is ALWAYS mounted — hidden with CSS when not on pomodoro page.
+          This means its interval/refs/state live forever and never get reset. */}
+      <div style={{
+        position:'fixed', top:0, left:0, right:0, bottom:0,
+        // When not on pomodoro page: invisible + non-interactive, but MOUNTED
+        opacity: page==='pomodoro'?1:0,
+        pointerEvents: page==='pomodoro'?'auto':'none',
+        zIndex: page==='pomodoro'?50:-1,
+        transition:'opacity 0.2s',
+      }}>
+        <PomodoroPage {...pomoProps}/>
+      </div>
+
+      {/* Floating pill — visible on every page while timer is running */}
+      {page!=='pomodoro'&&pomoRunning&&(
+        <div onClick={()=>setPage('pomodoro')} style={{
+          position:'fixed',bottom:28,right:28,zIndex:9999,
+          background:'linear-gradient(135deg,#6C63FF,#43C6AC)',
+          borderRadius:50,padding:'12px 22px',
+          display:'flex',alignItems:'center',gap:12,
+          boxShadow:'0 8px 32px rgba(108,99,255,0.5)',
+          cursor:'pointer',userSelect:'none',
+        }}>
+          <style>{`
+            @keyframes pomoPulse{
+              0%,100%{box-shadow:0 8px 32px rgba(108,99,255,0.5)}
+              50%{box-shadow:0 8px 48px rgba(108,99,255,0.85)}
+            }
+          `}</style>
+          <span style={{fontSize:20}}>🍅</span>
+          <span style={{fontFamily:'Sora',fontWeight:800,fontSize:22,color:'white',letterSpacing:1,minWidth:70,textAlign:'center'}}>
+            {fmtTime(pomoTimeLeft)}
+          </span>
+          <div style={{display:'flex',flexDirection:'column',gap:1}}>
+            <span style={{fontSize:11,color:'rgba(255,255,255,0.9)',fontWeight:700}}>{modeLabel}</span>
+            <span style={{fontSize:10,color:'rgba(255,255,255,0.6)'}}>tap to open</span>
+          </div>
+        </div>
+      )}
+
+      {/* All non-pomodoro pages */}
+      {page!=='pomodoro'&&renderPage()}
+    </Layout>
+  )
 }
