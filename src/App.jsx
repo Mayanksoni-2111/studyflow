@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts'
-
 const fl=document.createElement('link');fl.href='https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap';fl.rel='stylesheet';document.head.appendChild(fl)
 const st=document.createElement('style');st.textContent=`
 *{margin:0;padding:0;box-sizing:border-box;}
