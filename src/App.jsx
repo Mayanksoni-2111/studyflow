@@ -1215,10 +1215,14 @@ function ProgressPage({user,data,setPage,setSelCourse}){
 /* ════════ POMODORO ════════ */
 // Timer state (running, timeLeft, mode, cycles) is lifted to App so it
 // survives navigation. PomodoroPage receives them as props.
-function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,mode,setMode,cycles,setCycles}){
+function PomodoroPage({user,data,saveD}){
+  const[mode,setMode]=useState('pomodoro')
   const[session,setSession]=useState(data.pomoSession||25)
   const[breakT,setBreakT]=useState(data.pomoBreak||5)
   const[longBreak,setLongBreak]=useState(data.pomoLong||15)
+  const[timeLeft,setTimeLeft]=useState((data.pomoSession||25)*60)
+  const[running,setRunning]=useState(false)
+  const[cycles,setCycles]=useState(0)
   const[bg,setBg]=useState(data.pomoBg||'lofi1')
   const[uploadedBg,setUploadedBg]=useState(data.uploadedBg||null)
   const[spotifyUrl,setSpotifyUrl]=useState(data.spotifyUrl||'')
@@ -1230,11 +1234,13 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const[timerFont,setTimerFont]=useState(data.timerFont||'Sora')
   const[alertSound,setAlertSound]=useState(data.alertSound||'bell')
   const intervalRef=useRef(null)
-  const endTimeRef=useRef(null)
+  useEffect(()=>{
+    if(isFullscreen){document.body.classList.add('pomo-fullscreen-active')}
+    else{document.body.classList.remove('pomo-fullscreen-active')}
+    return()=>document.body.classList.remove('pomo-fullscreen-active')
+  },[isFullscreen])
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
-
   useEffect(()=>{if(!running)setTimeLeft(durations[mode])},[mode,session,breakT,longBreak])
-
   const playSound=useCallback((type)=>{
     try{
       const ctx=new(window.AudioContext||window.webkitAudioContext)()
@@ -1247,53 +1253,19 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       };(sounds[type]||sounds.bell)()
     }catch(e){}
   },[])
-
-  const handleDone=useCallback(()=>{
-    clearInterval(intervalRef.current)
-    setRunning(false)
-    endTimeRef.current=null
-    playSound(alertSound)
-    if(mode==='pomodoro'){
-      setCycles(c=>c+1)
-      saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})
-    }
-    setTimeLeft(durations[mode])
-  },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
-
-  const tick=useCallback(()=>{
-    if(!endTimeRef.current)return
-    const remaining=Math.round((endTimeRef.current-Date.now())/1000)
-    if(remaining<=0){handleDone()}
-    else{setTimeLeft(remaining)}
-  },[handleDone,setTimeLeft])
-
-  // Start/stop interval based on running prop
   useEffect(()=>{
     if(running){
-      endTimeRef.current=Date.now()+timeLeft*1000
-      intervalRef.current=setInterval(tick,500)
-    }else{
-      clearInterval(intervalRef.current)
-      // Don't null endTimeRef here — pause preserves the remaining time
-    }
+      intervalRef.current=setInterval(()=>{
+        setTimeLeft(t=>{
+          if(t<=1){clearInterval(intervalRef.current);setRunning(false);playSound(alertSound);if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})};return durations[mode]}
+          return t-1
+        })
+      },1000)
+    }else clearInterval(intervalRef.current)
     return()=>clearInterval(intervalRef.current)
-  },[running])
-
-  // Re-sync display when tab becomes visible again
-  useEffect(()=>{
-    const onVisible=()=>{
-      if(!document.hidden&&running&&endTimeRef.current){
-        const remaining=Math.round((endTimeRef.current-Date.now())/1000)
-        if(remaining<=0){handleDone()}
-        else{setTimeLeft(remaining)}
-      }
-    }
-    document.addEventListener('visibilitychange',onVisible)
-    return()=>document.removeEventListener('visibilitychange',onVisible)
-  },[running,handleDone,setTimeLeft])
-
-  const reset=()=>{setRunning(false);endTimeRef.current=null;setTimeLeft(durations[mode])}
-  const skip=()=>{setRunning(false);endTimeRef.current=null;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
+  },[running,mode,session,breakT,longBreak,alertSound])
+  const reset=()=>{setRunning(false);setTimeLeft(durations[mode])}
+  const skip=()=>{setRunning(false);setMode(m=>m==='pomodoro'?'short':'pomodoro')}
   const getEmbedUrl=url=>{if(!url)return null;const m1=url.match(/playlist\/([a-zA-Z0-9]+)/);if(m1)return`https://open.spotify.com/embed/playlist/${m1[1]}?utm_source=generator&theme=0`;const m2=url.match(/album\/([a-zA-Z0-9]+)/);if(m2)return`https://open.spotify.com/embed/album/${m2[1]}?utm_source=generator&theme=0`;const m3=url.match(/track\/([a-zA-Z0-9]+)/);if(m3)return`https://open.spotify.com/embed/track/${m3[1]}?utm_source=generator&theme=0`;return null}
   const embedUrl=getEmbedUrl(spotifyUrl)
   const getBgStyle=()=>{if(bg==='uploaded'&&uploadedBg)return{background:`url(${uploadedBg}) center/cover`};return{background:POMO_BGS[bg]||POMO_BGS.lofi1}}
@@ -1324,7 +1296,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:8,marginBottom:44}}>
           {[['pomodoro','pomodoro'],['short','short break'],['long','long break']].map(([key,label])=>(
-            <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
+            <button key={key} onClick={()=>{setMode(key);setRunning(false)}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
               {label}
             </button>
           ))}
@@ -1340,20 +1312,77 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         </div>
         <button onClick={()=>playSound(alertSound)} style={{marginTop:18,background:'transparent',border:'none',color:'rgba(255,255,255,0.4)',fontSize:13,cursor:'pointer',fontWeight:500}} onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.8)'} onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.4)'}>🔔 test alert sound</button>
       </div>
-
+     
+ // Re-sync display when tab becomes visible again
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(!document.hidden&&running&&endTimeRef.current){
+        const remaining=Math.round((endTimeRef.current-Date.now())/1000)
+        if(remaining<=0){handleDone()}
+        else{setTimeLeft(remaining)}
+      }
+    }
       {showSpotify&&(
-        <div style={{position:'absolute',bottom:24,left:24,zIndex:2,width:330}} className="pop">
-          {embedUrl?(<div><iframe src={embedUrl} width="330" height="152" frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" style={{borderRadius:16,display:'block',boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}/><button onClick={()=>{setSpotifyUrl('');setSpotifyInput('');saveD({...data,spotifyUrl:''})}} style={{marginTop:8,background:'rgba(0,0,0,0.5)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:50,padding:'6px 16px',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer'}}>× Change playlist</button></div>):(
-            <div style={{background:'rgba(0,0,0,0.65)',borderRadius:18,padding:22,backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.15)'}}>
-              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}><svg width="22" height="22" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg><p style={{color:'white',fontSize:15,fontWeight:700}}>Spotify Player</p></div>
-              <p style={{color:'rgba(255,255,255,0.5)',fontSize:12,marginBottom:14}}>Paste a playlist, album or track link</p>
-              <input value={spotifyInput} onChange={e=>setSpotifyInput(e.target.value)} placeholder="https://open.spotify.com/playlist/..." style={{width:'100%',padding:'11px 14px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.08)',color:'white',fontSize:13,outline:'none',marginBottom:12}} onFocus={e=>e.target.style.borderColor='#1DB954'} onBlur={e=>e.target.style.borderColor='rgba(255,255,255,0.2)'}/>
-              <button onClick={()=>{setSpotifyUrl(spotifyInput);saveD({...data,spotifyUrl:spotifyInput})}} style={{width:'100%',padding:'12px',background:'#1DB954',border:'none',borderRadius:12,color:'white',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Sora,sans-serif'}}>▶ Load Player</button>
-            </div>
-          )}
+  <div style={{position:'absolute',bottom:24,left:24,zIndex:2,width:340}} className="pop">
+    {embedUrl?(
+      <div>
+        <iframe
+          src={embedUrl}
+          width="340" height="152"
+          frameBorder="0"
+          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+          loading="lazy"
+          style={{borderRadius:16,display:'block',boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}
+        />
+        {/* Premium note */}
+        <div style={{marginTop:8,background:'rgba(0,0,0,0.6)',borderRadius:12,padding:'8px 14px',backdropFilter:'blur(10px)',border:'1px solid rgba(255,255,255,0.1)'}}>
+          <p style={{fontSize:11,color:'rgba(255,255,255,0.6)',marginBottom:6,lineHeight:1.5}}>
+            ⚠️ <strong style={{color:'rgba(255,255,255,0.85)'}}>Spotify Free</strong> users hear 30-sec previews only. Full songs need <strong style={{color:'#1DB954'}}>Spotify Premium</strong>.
+          </p>
+          <button
+            onClick={()=>{
+              // Extract playlist/track URL and open in Spotify
+              const url=spotifyUrl.includes('spotify.com')?spotifyUrl:`https://open.spotify.com`
+              window.open(url,'_blank')
+            }}
+            style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'9px',background:'#1DB954',border:'none',borderRadius:10,color:'white',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Sora'}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+            Open Full Song in Spotify App
+          </button>
         </div>
-      )}
-
+        <button
+          onClick={()=>{setSpotifyUrl('');setSpotifyInput('');saveD({...data,spotifyUrl:''})}}
+          style={{marginTop:8,background:'rgba(0,0,0,0.5)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:50,padding:'6px 16px',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer'}}>
+          × Change playlist
+        </button>
+      </div>
+    ):(
+      <div style={{background:'rgba(0,0,0,0.65)',borderRadius:18,padding:22,backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.15)'}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+          <p style={{color:'white',fontSize:15,fontWeight:700}}>Spotify Player</p>
+        </div>
+        <p style={{color:'rgba(255,255,255,0.5)',fontSize:12,marginBottom:6,lineHeight:1.5}}>Paste a playlist, album or track link</p>
+        <p style={{color:'rgba(255,255,255,0.35)',fontSize:11,marginBottom:12,lineHeight:1.5}}>
+          💡 Tip: <strong style={{color:'rgba(255,255,255,0.55)'}}>Spotify Premium</strong> plays full songs. Free accounts play 30-sec previews.
+        </p>
+        <input
+          value={spotifyInput}
+          onChange={e=>setSpotifyInput(e.target.value)}
+          placeholder="https://open.spotify.com/playlist/..."
+          style={{width:'100%',padding:'11px 14px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.08)',color:'white',fontSize:13,outline:'none',marginBottom:12}}
+          onFocus={e=>e.target.style.borderColor='#1DB954'}
+          onBlur={e=>e.target.style.borderColor='rgba(255,255,255,0.2)'}
+        />
+        <button
+          onClick={()=>{setSpotifyUrl(spotifyInput);saveD({...data,spotifyUrl:spotifyInput})}}
+          style={{width:'100%',padding:'12px',background:'#1DB954',border:'none',borderRadius:12,color:'white',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Sora'}}>
+          ▶ Load Player
+        </button>
+      </div>
+    )}
+  </div>
+)}
       {showSettings&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={()=>setShowSettings(false)}>
           <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:520,maxWidth:'95vw',maxHeight:'88vh',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}} onClick={e=>e.stopPropagation()}>
@@ -1433,7 +1462,6 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     </div>
   )
 }
-
 /* ════════ REUSABLES ════════ */
 function Card({children,style,className}){return <div className={className} style={{background:'var(--card)',borderRadius:16,padding:20,border:'1px solid var(--border)',boxShadow:'var(--shadow)',...style}}>{children}</div>}
 function Btn({children,onClick,style}){return <button onClick={onClick} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'10px 20px',background:'var(--primary)',color:'white',border:'none',borderRadius:50,fontFamily:'Sora',fontWeight:600,fontSize:13,cursor:'pointer',boxShadow:'0 4px 14px rgba(108,99,255,0.25)',transition:'opacity 0.2s',...style}} onMouseEnter={e=>e.currentTarget.style.opacity='0.87'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>{children}</button>}
