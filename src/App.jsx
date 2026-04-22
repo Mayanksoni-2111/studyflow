@@ -27,21 +27,236 @@ td{padding:12px 16px;font-size:14px;}
 .tab-btn{padding:7px 18px;border-radius:50px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:all 0.18s;font-family:'Sora',sans-serif;}
 .cal-day{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;margin:0 auto;transition:all 0.15s;}
 .batman-bg{background-color:#f0a500;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'%3E%3Cg fill='%231a0800' opacity='0.55'%3E%3Cpath d='M20 28 Q10 18 2 22 Q8 24 10 28 Q6 26 4 30 Q10 28 14 32 Q12 36 14 40 Q18 34 20 36 Q22 34 26 40 Q28 36 26 32 Q30 28 36 30 Q34 26 36 22 Q28 18 20 28Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.4'%3E%3Cpath d='M72 52 Q64 44 58 47 Q63 49 64 52 Q61 51 60 54 Q65 52 68 56 Q66 59 68 62 Q71 57 72 59 Q73 57 76 62 Q78 59 76 56 Q79 52 84 54 Q83 51 84 47 Q78 44 72 52Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.3'%3E%3Cpath d='M82 12 Q76 6 72 9 Q76 10 76 13 Q74 12 73 14 Q76 13 78 16 Q77 18 78 20 Q80 17 81 18 Q82 17 84 20 Q85 18 84 16 Q86 13 90 14 Q89 11 90 8 Q86 5 82 12Z'/%3E%3C/g%3E%3C/svg%3E");background-size:100px 70px;}
-.pomo-fullscreen-active .sidebar-fixed{display:none!important;}
 `;document.head.appendChild(st)
+ 
 
+ 
+
+
+// ═══════════════════════════════════════════════════════
+//  SUPABASE — official JS SDK loaded via CDN
+// ═══════════════════════════════════════════════════════
+const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
+const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
+
+// Inject the SDK script once at module load time
+if(!window.__supaLoaded){
+  window.__supaLoaded = true
+  const s = document.createElement('script')
+  s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js'
+  document.head.appendChild(s)
+}
+
+// Lazily get/create the client once the SDK has loaded
+let _client = null
+function getClient(){
+  if(_client) return _client
+  if(window.supabase?.createClient){
+    _client = window.supabase.createClient(SUPA_URL, SUPA_KEY, {
+      auth:{ persistSession:true, storageKey:'sf_supa_sess' }
+    })
+  }
+  return _client
+}
+
+// Wait up to 6 s for the CDN script to finish loading
+function waitClient(){
+  return new Promise((res,rej)=>{
+    const t0 = Date.now()
+    const poll = ()=>{
+      const c = getClient()
+      if(c) return res(c)
+      if(Date.now()-t0 > 6000) return rej(new Error('Supabase SDK did not load — check internet connection'))
+      setTimeout(poll, 100)
+    }
+    poll()
+  })
+}
+
+// Clean async wrappers
+const supa = {
+  async signUp(email, password, name){
+    const c = await waitClient()
+    return c.auth.signUp({ email, password, options:{ data:{ name } } })
+  },
+  async signIn(email, password){
+    const c = await waitClient()
+    return c.auth.signInWithPassword({ email, password })
+  },
+  async signOut(){
+    const c = await waitClient()
+    return c.auth.signOut()
+  },
+  async getSession(){
+    const c = await waitClient()
+    return c.auth.getSession()
+  },
+  async upsertData(userId, payload){
+    const c = await waitClient()
+    const { avatar, uploadedBg, ...safe } = payload   // skip large base64 blobs
+    return c.from('user_data').upsert(
+      { user_id: userId, data: safe, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' }
+    )
+  },
+  async fetchData(userId){
+    const c = await waitClient()
+    const { data, error } = await c.from('user_data').select('data').eq('user_id', userId).single()
+    if(error) return null
+    return data?.data || null
+  },
+}
+
+// ── Session key (kept for backward compat; SDK manages tokens itself) ──
+const SESS = 'sf_sess'
+
+// ── Default data shape ────────────────────────────────────
+const defaultData = () => ({
+  courses:[], planner:[], sessions:[],
+  pomoBg:'lofi1', pomoSession:25, pomoBreak:5, pomoLong:15,
+  theme:'light', dailyGoal:120, weeklyGoal:600,
+  timerFont:'Sora', alertSound:'bell',
+  uploadedBg:null, spotifyUrl:'', avatar:null,
+  displayName:'', importedCalEvents:[],
+})
+
+// ── Local cache (instant reads, works offline) ────────────
+const localKey = uid => `sf_cache_${uid}`
+const getLocalCache = uid => { try { return JSON.parse(localStorage.getItem(localKey(uid))) || defaultData() } catch { return defaultData() } }
+const setLocalCache = (uid, d) => localStorage.setItem(localKey(uid), JSON.stringify(d))
+
+// ── Debounced cloud sync ──────────────────────────────────
+let _syncTimer = null
+const scheduleSync = (userId, data) => {
+  clearTimeout(_syncTimer)
+  _syncTimer = setTimeout(async () => {
+    try { await supa.upsertData(userId, data) } catch(e) {}
+  }, 1500)
+}
+
+// ── Auth Page ─────────────────────────────────────────────
+function AuthPage({onLogin}){
+  const[mode,setMode]=useState('login')
+  const[form,setForm]=useState({name:'',email:'',password:''})
+  const[err,setErr]=useState('')
+  const[loading,setLoading]=useState(false)
+  const[sdkReady,setSdkReady]=useState(false)
+
+  // Wait for SDK, then check existing session
+  useEffect(()=>{
+    waitClient().then(async c => {
+      setSdkReady(true)
+      // Restore existing session if still valid
+      const { data:{ session } } = await c.auth.getSession()
+      if(session?.user){
+        const uid = session.user.id
+        const name = session.user.user_metadata?.name || session.user.email.split('@')[0]
+        const user = { id:uid, email:session.user.email, name }
+        let d = null
+        try { d = await supa.fetchData(uid) } catch(e){}
+        const localD = getLocalCache(uid)
+        const finalD = d || (localD.courses?.length ? localD : defaultData())
+        setLocalCache(uid, finalD)
+        onLogin(user, finalD)
+      }
+    }).catch(e => setErr('Could not load Supabase SDK. Check your internet connection.'))
+  },[])
+
+  const submit = async () => {
+    setErr('')
+    if(!form.email.trim() || !form.password.trim()){ setErr('Email and password required.'); return }
+    setLoading(true)
+    try {
+      if(mode === 'signup'){
+        if(!form.name.trim()){ setErr('Name required.'); setLoading(false); return }
+        const { data, error } = await supa.signUp(form.email.trim(), form.password, form.name.trim())
+        if(error){ setErr(error.message); setLoading(false); return }
+        if(data?.session){
+          // Email confirmation disabled — logged in immediately
+          const uid = data.user.id
+          const user = { id:uid, email:data.user.email, name:form.name.trim() }
+          await supa.upsertData(uid, defaultData())
+          setLocalCache(uid, defaultData())
+          onLogin(user, defaultData())
+        } else {
+          setErr('Account created! Check your email to confirm, then log in.')
+        }
+      } else {
+        const { data, error } = await supa.signIn(form.email.trim(), form.password)
+        if(error){ setErr(error.message); setLoading(false); return }
+        const uid = data.user.id
+        const name = data.user.user_metadata?.name || data.user.email.split('@')[0]
+        const user = { id:uid, email:data.user.email, name }
+        let cloudD = null
+        try { cloudD = await supa.fetchData(uid) } catch(e){}
+        const localD = getLocalCache(uid)
+        const finalD = cloudD || (localD.courses?.length ? localD : defaultData())
+        setLocalCache(uid, finalD)
+        onLogin(user, finalD)
+      }
+    } catch(e){
+      setErr(e?.message || 'Something went wrong. Please try again.')
+    }
+    setLoading(false)
+  }
+
+  const inp = {
+    width:'100%', padding:'12px 14px', marginBottom:14,
+    borderRadius:12, border:'1px solid rgba(255,255,255,0.4)',
+    background:'rgba(255,255,255,0.15)', color:'#ffffff',
+    outline:'none', fontSize:15, fontWeight:500, backdropFilter:'blur(8px)',
+  }
+
+  return(
+    <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#667eea 0%,#764ba2 50%,#43c6ac 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20,fontFamily:'Sora,sans-serif'}}>
+      <div style={{width:400,maxWidth:'100%',padding:35,borderRadius:24,background:'rgba(255,255,255,0.1)',backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.2)',boxShadow:'0 25px 60px rgba(0,0,0,0.3)',color:'white',animation:'fadeIn 0.6s ease'}}>
+        <div style={{textAlign:'center',marginBottom:25}}>
+          <div style={{fontSize:42}}>📚</div>
+          <h1 style={{fontSize:28,fontWeight:800}}>StudyFlow</h1>
+          <p style={{fontSize:13,opacity:0.7}}>Focus • Track • Improve</p>
+        </div>
+        {!sdkReady ? (
+          <div style={{textAlign:'center',padding:'30px 0',opacity:0.8}}>
+            <div style={{fontSize:28,marginBottom:10}}>⏳</div>
+            <p style={{fontSize:14}}>Connecting to server...</p>
+          </div>
+        ) : (
+          <>
+            <div style={{display:'flex',background:'rgba(255,255,255,0.1)',borderRadius:50,padding:4,marginBottom:20}}>
+              {['login','signup'].map(m=>(
+                <button key={m} onClick={()=>{setMode(m);setErr('')}} style={{flex:1,padding:10,border:'none',borderRadius:50,cursor:'pointer',fontWeight:600,background:mode===m?'white':'transparent',color:mode===m?'#333':'white',transition:'0.3s',fontFamily:'Sora'}}>
+                  {m==='login'?'Login':'Sign Up'}
+                </button>
+              ))}
+            </div>
+            {mode==='signup'&&<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Full Name" style={inp}/>}
+            <input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="Email" style={inp}/>
+            <input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()} placeholder="Password" style={inp}/>
+            {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{err}</div>}
+            <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora'}}>
+              {loading?'⏳ Please wait...':(mode==='login'?'Login →':'Create Account →')}
+            </button>
+            <p style={{textAlign:'center',fontSize:12,opacity:0.6,marginTop:15}}>☁️ Data syncs across all your devices</p>
+          </>
+        )}
+      </div>
+      <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} input::placeholder{color:rgba(255,255,255,0.6)}`}</style>
+    </div>
+  )
+}
+
+/* ════════ LAYOUT ════════ */
 /* ── THEMES ── */
-
 const THEMES={
   light:{name:'Light',emoji:'☀️','--bg':'#F4F3FF','--card':'#FFFFFF','--text':'#1a1a2e','--text2':'#6b6b8a','--border':'#EEECFF','--hover':'#FAFAFE','--sidebar':'#FFFFFF','--input':'#F4F3FF','--shadow':'0 2px 16px rgba(108,99,255,0.08)','--primary':'#6C63FF','--success':'#43C6AC','--warning':'#FFB347',sidebarEmoji:'📚',sidebarBg:'#FFFFFF',sidebarDark:false},
   dark:{name:'Dark',emoji:'🌙','--bg':'#0f0f1a','--card':'#1e1e30','--text':'#e8e6ff','--text2':'#9b99b8','--border':'#2e2e48','--hover':'#252540','--sidebar':'#15152a','--input':'#252540','--shadow':'0 2px 16px rgba(0,0,0,0.4)','--primary':'#7B74FF','--success':'#43C6AC','--warning':'#FFB347',sidebarEmoji:'📚',sidebarBg:'#15152a',sidebarDark:true},
-  batman:{name:'Batman',emoji:'🦇','--bg':'#0a0a0f','--card':'#111118','--text':'#f0e060','--text2':'#a09830','--border':'#2a2a10','--hover':'#1a1a08','--sidebar':'#07070d','--input':'#1a1a08','--shadow':'0 2px 20px rgba(240,224,96,0.15)','--primary':'#f0e060','--success':'#c8b800','--warning':'#ff8800',sidebarEmoji:'🦇',sidebarBg:'#07070d',sidebarDark:true},
-  avengers:{name:'Avengers',emoji:'🛡️','--bg':'#0d1117','--card':'#161b22','--text':'#e6edf3','--text2':'#8b949e','--border':'#21262d','--hover':'#1c2128','--sidebar':'#010409','--input':'#1c2128','--shadow':'0 2px 20px rgba(198,40,40,0.2)','--primary':'#c62828','--success':'#1565c0','--warning':'#f9a825',sidebarEmoji:'⚡',sidebarBg:'#010409',sidebarDark:true},
-  barbie:{name:'Barbie',emoji:'💖','--bg':'#fff0f8','--card':'#ffffff','--text':'#880044','--text2':'#cc6699','--border':'#ffccee','--hover':'#fff5fb','--sidebar':'#ff69b4','--input':'#fff0f8','--shadow':'0 2px 20px rgba(255,105,180,0.2)','--primary':'#ff1493','--success':'#ff69b4','--warning':'#ffb347',sidebarEmoji:'👛',sidebarBg:'#ff69b4',sidebarDark:true},
-  unicorn:{name:'Unicorn',emoji:'🦄','--bg':'#fdf4ff','--card':'#ffffff','--text':'#4a0080','--text2':'#9b59b6','--border':'#e8d0ff','--hover':'#faf0ff','--sidebar':'#f3e0ff','--input':'#fdf4ff','--shadow':'0 2px 20px rgba(155,89,182,0.15)','--primary':'#a855f7','--success':'#ec4899','--warning':'#f59e0b',sidebarEmoji:'🦄',sidebarBg:'#f3e0ff',sidebarDark:false},
-  anime:{name:'Anime',emoji:'⚔️','--bg':'#fff8f0','--card':'#ffffff','--text':'#1a0a00','--text2':'#8b4513','--border':'#ffd0a0','--hover':'#fff3e0','--sidebar':'#1a0a00','--input':'#fff8f0','--shadow':'0 2px 20px rgba(255,100,0,0.15)','--primary':'#ff6400','--success':'#00aa44','--warning':'#ffcc00',sidebarEmoji:'⛩️',sidebarBg:'#1a0a00',sidebarDark:true},
-  nature:{name:'Nature',emoji:'🌿','--bg':'#f0f7f0','--card':'#ffffff','--text':'#1a3a1a','--text2':'#4a7a4a','--border':'#c8e6c8','--hover':'#e8f5e8','--sidebar':'#1a3a1a','--input':'#f0f7f0','--shadow':'0 2px 20px rgba(26,100,26,0.1)','--primary':'#2e7d32','--success':'#43a047','--warning':'#f9a825',sidebarEmoji:'🌳',sidebarBg:'#1a3a1a',sidebarDark:true},
-  cars:{name:'Racing',emoji:'🏎️','--bg':'#0a0a0a','--card':'#141414','--text':'#ffffff','--text2':'#999999','--border':'#2a2a2a','--hover':'#1e1e1e','--sidebar':'#050505','--input':'#1e1e1e','--shadow':'0 2px 20px rgba(255,50,0,0.2)','--primary':'#ff3200','--success':'#00ff88','--warning':'#ffcc00',sidebarEmoji:'🏁',sidebarBg:'#050505',sidebarDark:true},
+  batman:{name:'Batman',emoji:'🦇','--bg':'#0a0a0f','--card':'#111118','--text':'#f0e060','--text2':'#a09830','--border':'#2a2a10','--hover':'#1a1a08','--sidebar':'#07070d','--input':'#1a1a08','--shadow':'0 2px 20px rgba(240,224,96,0.15)','--primary':'#f0e060','--success':'#c8b800','--warning':'#ff8800',sidebarEmoji:'🦇',sidebarBg:'#07070d',sidebarDark:true,decoration:['🦇','🦇','🦇']},
+  avengers:{name:'Avengers',emoji:'🛡️','--bg':'#0d1117','--card':'#161b22','--text':'#e6edf3','--text2':'#8b949e','--border':'#21262d','--hover':'#1c2128','--sidebar':'#010409','--input':'#1c2128','--shadow':'0 2px 20px rgba(198,40,40,0.2)','--primary':'#c62828','--success':'#1565c0','--warning':'#f9a825',sidebarEmoji:'⚡',sidebarBg:'#010409',sidebarDark:true,decoration:['🛡️','⚡','🔴']},
+  barbie:{name:'Barbie',emoji:'💖','--bg':'#fff0f8','--card':'#ffffff','--text':'#880044','--text2':'#cc6699','--border':'#ffccee','--hover':'#fff5fb','--sidebar':'#ff69b4','--input':'#fff0f8','--shadow':'0 2px 20px rgba(255,105,180,0.2)','--primary':'#ff1493','--success':'#ff69b4','--warning':'#ffb347',sidebarEmoji:'👛',sidebarBg:'#ff69b4',sidebarDark:true,decoration:['💖','✨','👠']},
+  unicorn:{name:'Unicorn',emoji:'🦄','--bg':'#fdf4ff','--card':'#ffffff','--text':'#4a0080','--text2':'#9b59b6','--border':'#e8d0ff','--hover':'#faf0ff','--sidebar':'#f3e0ff','--input':'#fdf4ff','--shadow':'0 2px 20px rgba(155,89,182,0.15)','--primary':'#a855f7','--success':'#ec4899','--warning':'#f59e0b',sidebarEmoji:'🦄',sidebarBg:'#f3e0ff',sidebarDark:false,decoration:['🦄','🌈','⭐']},
+  anime:{name:'Anime',emoji:'⚔️','--bg':'#fff8f0','--card':'#ffffff','--text':'#1a0a00','--text2':'#8b4513','--border':'#ffd0a0','--hover':'#fff3e0','--sidebar':'#1a0a00','--input':'#fff8f0','--shadow':'0 2px 20px rgba(255,100,0,0.15)','--primary':'#ff6400','--success':'#00aa44','--warning':'#ffcc00',sidebarEmoji:'⛩️',sidebarBg:'#1a0a00',sidebarDark:true,decoration:['⚔️','🌸','⛩️']},
+  nature:{name:'Nature',emoji:'🌿','--bg':'#f0f7f0','--card':'#ffffff','--text':'#1a3a1a','--text2':'#4a7a4a','--border':'#c8e6c8','--hover':'#e8f5e8','--sidebar':'#1a3a1a','--input':'#f0f7f0','--shadow':'0 2px 20px rgba(26,100,26,0.1)','--primary':'#2e7d32','--success':'#43a047','--warning':'#f9a825',sidebarEmoji:'🌳',sidebarBg:'#1a3a1a',sidebarDark:true,decoration:['🌿','🍃','🌱']},
+  cars:{name:'Racing',emoji:'🏎️','--bg':'#0a0a0a','--card':'#141414','--text':'#ffffff','--text2':'#999999','--border':'#2a2a2a','--hover':'#1e1e1e','--sidebar':'#050505','--input':'#1e1e1e','--shadow':'0 2px 20px rgba(255,50,0,0.2)','--primary':'#ff3200','--success':'#00ff88','--warning':'#ffcc00',sidebarEmoji:'🏁',sidebarBg:'#050505',sidebarDark:true,decoration:['🏎️','🏁','🔥']},
 }
 
 function applyTheme(key){
@@ -51,20 +266,57 @@ function applyTheme(key){
   document.body.style.color=t['--text']
 }
 
-const SESS='sf_sess'
-const dataKey=e=>`sf_data_${e}`
-const getUsers=()=>JSON.parse(localStorage.getItem('sf_users')||'[]')
-const saveUsers=u=>localStorage.setItem('sf_users',JSON.stringify(u))
-const defaultData=()=>({courses:[],planner:[],sessions:[],pomoBg:'lofi1',pomoSession:25,pomoBreak:5,pomoLong:15,theme:'light',dailyGoal:120,weeklyGoal:600,timerFont:'Sora',alertSound:'bell',uploadedBg:null,spotifyUrl:'',avatar:null,displayName:'',importedCalEvents:[]})
-const getData=e=>{try{return JSON.parse(localStorage.getItem(dataKey(e)))||defaultData()}catch{return defaultData()}}
-const saveData=(e,d)=>localStorage.setItem(dataKey(e),JSON.stringify(d))
+/* ════════ THEME CHARACTER ════════ */
+const THEME_CHARACTERS={
+  light:{emoji:'📚',name:'Bookworm Buddy',chars:['📚','✏️','🎒','📐','🌟'],colors:['#6C63FF','#A78BFA','#43C6AC','#FFB347','#F472B6'],bg:'linear-gradient(135deg,#F4F3FF,#E8E6FF)',border:'#C4C0FF',message:'Keep studying, superstar!',animation:'bounce'},
+  dark:{emoji:'🌙',name:'Night Owl',chars:['🦉','🌙','⭐','💫','🔭'],colors:['#7B74FF','#A78BFA','#43C6AC','#60A5FA','#F472B6'],bg:'linear-gradient(135deg,#1e1e30,#252540)',border:'#3a3a5c',message:'Night grind mode: ON',animation:'float'},
+  batman:{emoji:'🦇',name:'Dark Knight',chars:['🦇','🌃','🌑','⚡','🖤'],colors:['#f0e060','#a09830','#f0e060','#c8b800','#ff8800'],bg:'linear-gradient(135deg,#0a0a0f,#1a1a08)',border:'#f0e06033',message:'I am Batman.',animation:'float'},
+  avengers:{emoji:'🛡️',name:'Study Avenger',chars:['🛡️','⚡','🔴','🦾','🪖'],colors:['#c62828','#1565c0','#f9a825','#c62828','#1565c0'],bg:'linear-gradient(135deg,#0d1117,#1c2128)',border:'#c6282844',message:'Avengers... STUDY!',animation:'assemble'},
+  barbie:{emoji:'💖',name:'Study Barbie',chars:['💖','👛','✨','💅','👠'],colors:['#ff1493','#ff69b4','#ff1493','#ffb347','#ff69b4'],bg:'linear-gradient(135deg,#fff0f8,#ffd6ee)',border:'#ff69b4',message:"She's studying, she's everything!",animation:'sparkle'},
+  unicorn:{emoji:'🦄',name:'Uni the Unicorn',chars:['🦄','🌈','⭐','🌸','💜'],colors:['#a855f7','#ec4899','#f59e0b','#a855f7','#ec4899'],bg:'linear-gradient(135deg,#fdf4ff,#f3e0ff)',border:'#d8b4fe',message:'Believe in your magic! ✨',animation:'rainbow'},
+  anime:{emoji:'⚔️',name:'Study Protagonist',chars:['⚔️','🌸','⛩️','🔥','💢'],colors:['#ff6400','#00aa44','#ffcc00','#ff6400','#00aa44'],bg:'linear-gradient(135deg,#fff8f0,#ffe8d0)',border:'#ffd0a0',message:'この試験は俺が倒す！',animation:'power-up'},
+  nature:{emoji:'🌿',name:'Forest Scholar',chars:['🌿','🍃','🌱','🌳','🦋'],colors:['#2e7d32','#43a047','#66bb6a','#2e7d32','#43a047'],bg:'linear-gradient(135deg,#f0f7f0,#e0f0e0)',border:'#a5d6a7',message:'Grow like a tree 🌱',animation:'sway'},
+  cars:{emoji:'🏎️',name:'Speed Learner',chars:['🏎️','🏁','🔥','⚡','💨'],colors:['#ff3200','#00ff88','#ffcc00','#ff3200','#00ff88'],bg:'linear-gradient(135deg,#0a0a0a,#1e1e1e)',border:'#ff320044',message:'FULL THROTTLE STUDYING!',animation:'zoom'},
+}
 
+function ThemeCharacter({theme}){
+  const cfg=THEME_CHARACTERS[theme]||THEME_CHARACTERS.light
+  const T=THEMES[theme]||THEMES.light
+  return(
+    <div style={{marginTop:32,borderRadius:24,border:`2px solid ${cfg.border}`,background:cfg.bg,padding:'28px 24px',display:'flex',alignItems:'center',gap:28,overflow:'hidden',position:'relative'}}>
+      <style>{`
+        @keyframes tc-bounce{0%,100%{transform:translateY(0) rotate(0deg)}25%{transform:translateY(-18px) rotate(-8deg)}75%{transform:translateY(-8px) rotate(6deg)}}
+        @keyframes tc-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-16px)}}
+        @keyframes tc-assemble{0%,100%{transform:scale(1) rotate(0deg)}50%{transform:scale(1.15) rotate(5deg)}}
+        @keyframes tc-sparkle{0%,100%{transform:scale(1) rotate(0deg)}25%{transform:scale(1.2) rotate(-10deg)}75%{transform:scale(1.1) rotate(10deg)}}
+        @keyframes tc-rainbow{0%{filter:hue-rotate(0deg)}100%{filter:hue-rotate(360deg)}}
+        @keyframes tc-power-up{0%,100%{transform:scale(1) translateY(0)}50%{transform:scale(1.3) translateY(-12px)}}
+        @keyframes tc-sway{0%,100%{transform:rotate(-6deg)}50%{transform:rotate(6deg)}}
+        @keyframes tc-zoom{0%{transform:translateX(-8px) skewX(-5deg)}50%{transform:translateX(8px) skewX(5deg)}100%{transform:translateX(-8px) skewX(-5deg)}}
+        @keyframes tc-drift{0%{transform:translateX(0) translateY(0)}33%{transform:translateX(8px) translateY(-6px)}66%{transform:translateX(-6px) translateY(4px)}100%{transform:translateX(0) translateY(0)}}
+      `}</style>
+      <div style={{fontSize:80,lineHeight:1,flexShrink:0,animation:`tc-${cfg.animation} 2.5s ease-in-out infinite`,filter:'drop-shadow(0 8px 16px rgba(0,0,0,0.18))',userSelect:'none'}}>{cfg.chars[0]}</div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:11,fontWeight:700,textTransform:'uppercase',letterSpacing:1.5,color:T['--primary'],marginBottom:4,fontFamily:'Sora,sans-serif',opacity:0.8}}>{cfg.name}</div>
+        <div style={{fontSize:20,fontWeight:800,color:T['--text'],fontFamily:'Sora,sans-serif',marginBottom:10,lineHeight:1.3}}>{cfg.message}</div>
+        <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+          {cfg.chars.slice(1).map((ch,i)=><div key={i} style={{fontSize:28,animation:`tc-drift ${2+i*0.4}s ease-in-out ${i*0.3}s infinite`,userSelect:'none',filter:'drop-shadow(0 2px 6px rgba(0,0,0,0.12))'}}>{ch}</div>)}
+        </div>
+      </div>
+      {[0,1,2,3].map(i=><div key={i} style={{position:'absolute',width:[60,40,80,30][i],height:[60,40,80,30][i],borderRadius:'50%',background:cfg.colors[i%cfg.colors.length],opacity:0.08,top:['10%','60%','-20%','70%'][i],right:`${8+i*8}%`,animation:`tc-float ${3+i}s ease-in-out ${i*0.5}s infinite`,pointerEvents:'none'}}/>)}
+      <div style={{position:'absolute',top:16,right:16,background:T['--primary'],color:'white',borderRadius:50,padding:'4px 12px',fontSize:11,fontWeight:700,fontFamily:'Sora,sans-serif',display:'flex',alignItems:'center',gap:5,boxShadow:`0 4px 14px ${T['--primary']}44`}}>{T.emoji} {T.name}</div>
+    </div>
+  )
+}
+
+/* ── IndexedDB ── */
 const IDB_NAME='studyflow_pdfs',IDB_STORE='pdfs'
 function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,1);r.onupgradeneeded=e=>e.target.result.createObjectStore(IDB_STORE);r.onsuccess=e=>res(e.target.result);r.onerror=()=>rej(r.error)})}
 async function savePDF(key,file){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(file,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
 async function getPDF(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readonly');const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error)})}
 async function deletePDF(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).delete(key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
 
+/* ── Constants ── */
 const COLORS=['#6C63FF','#FF6584','#43C6AC','#FFB347','#A78BFA','#F472B6','#34D399','#60A5FA']
 const POMO_BGS={gradient1:'linear-gradient(135deg,#667eea,#764ba2)',gradient2:'linear-gradient(135deg,#f093fb,#f5576c)',gradient3:'linear-gradient(135deg,#4facfe,#00f2fe)',gradient4:'linear-gradient(135deg,#43e97b,#38f9d7)',solid1:'#1a1a2e',solid2:'#2d1b69',solid3:'#0f3460',solid4:'#16213e',lofi1:'url(https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1200&q=80) center/cover',lofi2:'url(https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1200&q=80) center/cover',lofi3:'url(https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=1200&q=80) center/cover'}
 const BG_LABELS={gradient1:'Purple Dream',gradient2:'Pink Sunset',gradient3:'Ocean Blue',gradient4:'Mint Fresh',solid1:'Midnight',solid2:'Deep Purple',solid3:'Navy',solid4:'Dark Blue',lofi1:'Mountain Night',lofi2:'Mountain Lake',lofi3:'Forest'}
@@ -73,112 +325,33 @@ const daysUntil=d=>{if(!d)return null;return Math.ceil((new Date(d)-new Date())/
 const courseProgress=c=>{let t=0,d=0;(c.subjects||[]).forEach(s=>(s.chapters||[]).forEach(ch=>{t++;if(ch.done)d++}));return t?Math.round(d/t*100):0}
 const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
 
-function SidebarCharacter({theme}){
-  const W={position:'absolute',bottom:230,left:0,right:0,pointerEvents:'none',userSelect:'none',textAlign:'center',zIndex:0,opacity:0.55}
-  const R={display:'flex',justifyContent:'center',alignItems:'center',gap:4}
-  const L={fontSize:8,letterSpacing:2,marginTop:3,fontFamily:'monospace',opacity:0.5}
-  if(theme==='batman')return(
-    <div style={W}>
-      <div style={{fontSize:9,color:'rgba(240,224,96,0.2)',fontFamily:'monospace',lineHeight:1}}>{'█▄█ ▄█▄ █▄█'}</div>
-      <div style={{marginTop:2}}>
-        <div style={{fontSize:9,color:'rgba(240,224,96,0.15)',fontFamily:'monospace'}}>{'╔═══╗'}</div>
-        <div style={{fontSize:22,lineHeight:1}}>🦇</div>
-        <div style={{fontSize:9,color:'rgba(240,224,96,0.15)',fontFamily:'monospace'}}>{'╚═══╝'}</div>
-      </div>
-      <div style={{...R,gap:6,marginTop:3}}><span style={{fontSize:13}}>🌃</span><span style={{fontSize:10}}>🌑</span><span style={{fontSize:13}}>🌃</span></div>
-      <div style={{...L,color:'rgba(240,224,96,0.35)'}}>I AM BATMAN</div>
-    </div>
-  )
-  if(theme==='avengers')return(
-    <div style={W}>
-      <div style={{...R,gap:3,marginBottom:4}}>
-        <div style={{textAlign:'center'}}><div style={{fontSize:18}}>🛡️</div><div style={{fontSize:7,color:'rgba(198,40,40,0.5)',fontFamily:'monospace'}}>CAP</div></div>
-        <div style={{textAlign:'center'}}><div style={{fontSize:18}}>🦾</div><div style={{fontSize:7,color:'rgba(249,168,37,0.5)',fontFamily:'monospace'}}>IRON</div></div>
-        <div style={{textAlign:'center'}}><div style={{fontSize:18}}>⚡</div><div style={{fontSize:7,color:'rgba(21,101,192,0.5)',fontFamily:'monospace'}}>THOR</div></div>
-      </div>
-      <div style={{...R,gap:3,marginBottom:3}}>
-        <div style={{textAlign:'center'}}><div style={{fontSize:15}}>🕷️</div><div style={{fontSize:6,color:'rgba(198,40,40,0.4)',fontFamily:'monospace'}}>SPIDEY</div></div>
-        <div style={{textAlign:'center'}}><div style={{fontSize:15}}>💚</div><div style={{fontSize:6,color:'rgba(67,198,172,0.4)',fontFamily:'monospace'}}>HULK</div></div>
-        <div style={{textAlign:'center'}}><div style={{fontSize:15}}>🏹</div><div style={{fontSize:6,color:'rgba(198,40,40,0.4)',fontFamily:'monospace'}}>HAWK</div></div>
-      </div>
-      <div style={{...L,color:'rgba(249,168,37,0.5)',letterSpacing:3}}>ASSEMBLE</div>
-    </div>
-  )
-  if(theme==='barbie')return(
-    <div style={W}>
-      <div style={{fontSize:26}}>👸</div>
-      <div style={{fontSize:14,marginTop:1}}>👗</div>
-      <div style={{...R,gap:2,marginTop:3}}><span style={{fontSize:11}}>💅</span><span style={{fontSize:11}}>👄</span><span style={{fontSize:11}}>💄</span></div>
-      <div style={{...R,gap:2,marginTop:3}}><span style={{fontSize:10}}>✨</span><span style={{fontSize:10}}>💖</span><span style={{fontSize:10}}>✨</span></div>
-      <div style={{...L,color:'rgba(255,255,255,0.5)',fontFamily:'Sora',letterSpacing:2}}>BARBIE</div>
-    </div>
-  )
-  if(theme==='unicorn')return(
-    <div style={W}>
-      <div style={{fontSize:30}}>🦄</div>
-      <div style={{fontSize:14,marginTop:1}}>🌈</div>
-      <div style={{...R,gap:2,marginTop:3}}><span style={{fontSize:11}}>⭐</span><span style={{fontSize:11}}>✨</span><span style={{fontSize:11}}>💫</span></div>
-      <div style={{...R,gap:2,marginTop:2}}><span style={{fontSize:10}}>🌸</span><span style={{fontSize:10}}>🌺</span><span style={{fontSize:10}}>🌸</span></div>
-      <div style={{...L,color:'rgba(168,85,247,0.5)',fontFamily:'Sora'}}>MAGICAL ✨</div>
-    </div>
-  )
-  if(theme==='anime')return(
-    <div style={W}>
-      <div style={{fontSize:24}}>⛩️</div>
-      <div style={{...R,gap:6,marginTop:3}}>
-        <div style={{textAlign:'center'}}><div style={{fontSize:16}}>⚔️</div><div style={{fontSize:7,color:'rgba(255,100,0,0.4)',fontFamily:'monospace'}}>戦士</div></div>
-        <div style={{textAlign:'center'}}><div style={{fontSize:16}}>🌸</div><div style={{fontSize:7,color:'rgba(255,100,0,0.4)',fontFamily:'monospace'}}>桜</div></div>
-      </div>
-      <div style={{...R,gap:3,marginTop:3}}><span style={{fontSize:11}}>🔥</span><span style={{fontSize:11}}>💥</span><span style={{fontSize:11}}>⚡</span></div>
-      <div style={{...L,color:'rgba(255,100,0,0.5)'}}>頑張れ！</div>
-    </div>
-  )
-  if(theme==='nature')return(
-    <div style={W}>
-      <div style={{fontSize:26}}>🌳</div>
-      <div style={{...R,gap:3,marginTop:2}}><span style={{fontSize:14}}>🦋</span><span style={{fontSize:14}}>🐝</span><span style={{fontSize:14}}>🦋</span></div>
-      <div style={{...R,gap:2,marginTop:2}}><span style={{fontSize:11}}>🌿</span><span style={{fontSize:11}}>🌸</span><span style={{fontSize:11}}>🍃</span></div>
-      <div style={{...R,gap:2,marginTop:2}}><span style={{fontSize:10}}>🌱</span><span style={{fontSize:10}}>🌻</span><span style={{fontSize:10}}>🌱</span></div>
-      <div style={{...L,color:'rgba(255,255,255,0.3)'}}>STAY GROUNDED</div>
-    </div>
-  )
-  if(theme==='cars')return(
-    <div style={W}>
-      <div style={{fontSize:26}}>🏎️</div>
-      <div style={{fontSize:8,color:'rgba(255,50,0,0.4)',fontFamily:'monospace',letterSpacing:1,marginTop:2}}>{'════════════'}</div>
-      <div style={{...R,gap:3,marginTop:2}}><span style={{fontSize:13}}>🏆</span><span style={{fontSize:13}}>🔥</span><span style={{fontSize:13}}>🏁</span></div>
-      <div style={{...R,gap:2,marginTop:2}}><span style={{fontSize:10}}>⚡</span><span style={{fontSize:10}}>💨</span><span style={{fontSize:10}}>⚡</span></div>
-      <div style={{...L,color:'rgba(255,50,0,0.4)',letterSpacing:3}}>VROOM!</div>
-    </div>
-  )
-  return null
-}
-
+/* ════════ THEME PICKER ════════ */
 function ThemePicker({currentTheme,onSelect,onClose}){
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2000,backdropFilter:'blur(6px)'}} onClick={onClose}>
-      <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:540,maxWidth:'95vw',maxHeight:'85vh',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}} onClick={e=>e.stopPropagation()}>
+      <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:520,maxWidth:'95vw',maxHeight:'85vh',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}} onClick={e=>e.stopPropagation()}>
         <div style={{padding:'22px 26px 18px',background:'linear-gradient(135deg,var(--primary),var(--success))'}}>
           <h3 style={{fontSize:20,fontWeight:800,color:'white',marginBottom:4}}>🎨 Choose Your Theme</h3>
-          <p style={{fontSize:13,color:'rgba(255,255,255,0.8)'}}>Colors, characters and vibes!</p>
+          <p style={{fontSize:13,color:'rgba(255,255,255,0.8)'}}>Personalize the whole app to match your vibe!</p>
         </div>
         <div style={{padding:20,overflowY:'auto',maxHeight:'65vh'}}>
           <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12}}>
             {Object.entries(THEMES).map(([key,t])=>{
               const isActive=currentTheme===key
-              const miniChar={batman:'🦇',avengers:'🛡️⚡🔴',barbie:'👸',unicorn:'🦄',anime:'⚔️🌸',nature:'🌳🦋',cars:'🏎️🏁',light:'',dark:''}
               return(
                 <div key={key} onClick={()=>{onSelect(key);onClose()}} style={{borderRadius:16,overflow:'hidden',cursor:'pointer',border:`3px solid ${isActive?t['--primary']:'transparent'}`,transition:'all 0.2s',transform:isActive?'scale(1.03)':'scale(1)'}} onMouseEnter={e=>!isActive&&(e.currentTarget.style.transform='scale(1.02)')} onMouseLeave={e=>!isActive&&(e.currentTarget.style.transform='scale(1)')}>
-                  <div style={{height:82,background:t['--bg'],position:'relative',overflow:'hidden'}}>
-                    <div style={{position:'absolute',left:0,top:0,bottom:0,width:26,background:t.sidebarBg||t['--sidebar'],display:'flex',flexDirection:'column',alignItems:'center',padding:'5px 0',gap:3}}>
-                      <div style={{fontSize:11}}>{t.sidebarEmoji||'📚'}</div>
-                      {[1,2,3].map(i=><div key={i} style={{height:3,width:'70%',borderRadius:99,background:t['--primary'],opacity:i===1?0.9:0.3}}/>)}
-                      {miniChar[key]&&<div style={{fontSize:9,marginTop:'auto',marginBottom:3,lineHeight:1.2,textAlign:'center'}}>{miniChar[key]}</div>}
+                  <div style={{height:70,background:t['--bg'],position:'relative',overflow:'hidden'}}>
+                    <div style={{position:'absolute',left:0,top:0,bottom:0,width:24,background:t.sidebarBg||t['--sidebar'],display:'flex',flexDirection:'column',padding:'6px 3px',gap:3}}>
+                      {[1,2,3].map(i=><div key={i} style={{height:3,borderRadius:99,background:t['--primary'],opacity:i===1?0.9:0.3,width:i===1?'80%':'60%'}}/>)}
                     </div>
-                    <div style={{marginLeft:26,padding:'8px 8px'}}>
-                      <div style={{height:5,borderRadius:99,background:t['--primary'],width:'55%',opacity:0.8,marginBottom:6}}/>
-                      <div style={{display:'flex',gap:3}}><div style={{flex:1,height:18,borderRadius:6,background:t['--card'],border:`1px solid ${t['--border']}`}}/><div style={{flex:1,height:18,borderRadius:6,background:t['--card'],border:`1px solid ${t['--border']}`}}/></div>
+                    <div style={{marginLeft:24,padding:8,display:'flex',flexDirection:'column',gap:4}}>
+                      <div style={{height:5,borderRadius:99,background:t['--primary'],width:'55%',opacity:0.8}}/>
+                      <div style={{display:'flex',gap:3}}>
+                        <div style={{flex:1,height:20,borderRadius:8,background:t['--card'],border:`1px solid ${t['--border']}`}}/>
+                        <div style={{flex:1,height:20,borderRadius:8,background:t['--card'],border:`1px solid ${t['--border']}`}}/>
+                      </div>
                     </div>
+                    {t.decoration&&<div style={{position:'absolute',bottom:3,right:4,fontSize:14,opacity:0.5}}>{t.decoration[0]}</div>}
                     {isActive&&<div style={{position:'absolute',top:5,right:5,width:18,height:18,borderRadius:'50%',background:t['--primary'],display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,color:'white',fontWeight:700}}>✓</div>}
                   </div>
                   <div style={{background:isActive?t['--primary']:t['--card'],padding:'8px 12px',display:'flex',alignItems:'center',gap:8,borderTop:`1px solid ${t['--border']}`}}>
@@ -197,6 +370,7 @@ function ThemePicker({currentTheme,onSelect,onClose}){
     </div>
   )
 }
+
 /* ════════ PROFILE PANEL ════════ */
 function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   const[name,setName]=useState(data.displayName||user.name)
@@ -212,10 +386,8 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   const totalChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).length,0),0)
   const doneChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).filter(ch=>ch.done).length,0),0)
   const T=THEMES[data.theme||'light']||THEMES.light
-
   const handleAvatar=e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=ev=>saveD({...data,avatar:ev.target.result});r.readAsDataURL(file)}
-  const saveName=()=>{if(!name.trim())return;const users=getUsers();saveUsers(users.map(u=>u.email===user.email?{...u,name:name.trim()}:u));saveD({...data,displayName:name.trim()});onNameChange(name.trim());setSaved(true);setTimeout(()=>setSaved(false),2000)}
-
+  const saveName=()=>{if(!name.trim())return;saveD({...data,displayName:name.trim()});onNameChange(name.trim());setSaved(true);setTimeout(()=>setSaved(false),2000)}
   const exportICSFile=()=>{
     const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//StudyFlow//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH']
     let count=0
@@ -225,7 +397,6 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
     const blob=new Blob([lines.join('\r\n')],{type:'text/calendar'})
     const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='studyflow_exams.ics';a.click();URL.revokeObjectURL(url)
   }
-
   const handleICSImport=e=>{
     const file=e.target.files[0];if(!file)return
     const r=new FileReader()
@@ -238,15 +409,11 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
           if(summary&&dtstart){const raw=dtstart.replace(/[TZ]/g,'').slice(0,8);const date=raw.length===8?`${raw.slice(0,4)}-${raw.slice(4,6)}-${raw.slice(6,8)}`:'';if(date)events.push({summary,date})}
         })
         if(events.length===0){setImportMsg('❌ No events found.');return}
-        saveD({...data,importedCalEvents:events})
-        setImportMsg(`✅ Imported ${events.length} events!`)
-        setTimeout(()=>setImportMsg(''),4000)
+        saveD({...data,importedCalEvents:events});setImportMsg(`✅ Imported ${events.length} events!`);setTimeout(()=>setImportMsg(''),4000)
       }catch{setImportMsg('❌ Could not read file.')}
     }
-    r.readAsText(file)
-    if(icsImportRef.current)icsImportRef.current.value=''
+    r.readAsText(file);if(icsImportRef.current)icsImportRef.current.value=''
   }
-
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={onClose}>
       <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:500,maxWidth:'95vw',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 32px 80px rgba(0,0,0,0.3)'}} onClick={e=>e.stopPropagation()}>
@@ -259,10 +426,7 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
             <div>
               <h2 style={{fontSize:19,fontWeight:800,color:'white',marginBottom:2}}>{data.displayName||user.name}</h2>
               <p style={{fontSize:12,color:'rgba(255,255,255,0.75)'}}>{user.email}</p>
-              <div style={{display:'inline-flex',alignItems:'center',gap:5,marginTop:5,background:'rgba(255,255,255,0.15)',borderRadius:50,padding:'3px 10px'}}>
-                <span style={{fontSize:13}}>{T.emoji}</span>
-                <span style={{fontSize:11,color:'white',fontWeight:600}}>{T.name} Theme</span>
-              </div>
+              <div style={{display:'inline-flex',alignItems:'center',gap:5,marginTop:5,background:'rgba(255,255,255,0.15)',borderRadius:50,padding:'3px 10px'}}><span style={{fontSize:13}}>{T.emoji}</span><span style={{fontSize:11,color:'white',fontWeight:600}}>{T.name} Theme</span></div>
             </div>
           </div>
           <input ref={avatarRef} type="file" accept="image/*" onChange={handleAvatar} style={{display:'none'}}/>
@@ -288,29 +452,17 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
           <div style={{background:'var(--bg)',borderRadius:14,padding:16,marginBottom:20}}>
             <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:4}}>📤 Export exam dates</p>
             <p style={{fontSize:11,color:'var(--text2)',marginBottom:10,lineHeight:1.6}}>Download <strong>.ics</strong> → import into Google Calendar, Apple Calendar, or Outlook.</p>
-            <button onClick={exportICSFile} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--primary)',color:'white',border:'none',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',marginBottom:6}} onMouseEnter={e=>e.currentTarget.style.opacity='0.87'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
-              ⬇ Export to Google / Apple Calendar
-            </button>
-            <p style={{fontSize:10,color:'var(--text2)',lineHeight:1.5,marginBottom:14}}><strong>Google:</strong> calendar.google.com → + Other calendars → Import &nbsp;|&nbsp; <strong>Apple:</strong> File → Import</p>
+            <button onClick={exportICSFile} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--primary)',color:'white',border:'none',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',marginBottom:12}}>⬇ Export to Google / Apple Calendar</button>
             <div style={{borderTop:'1px solid var(--border)',paddingTop:14}}>
-              <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:4}}>📥 Import from Google / Apple</p>
-              <p style={{fontSize:11,color:'var(--text2)',marginBottom:8,lineHeight:1.6}}>Export your calendar as <strong>.ics</strong> → upload here → events show on StudyFlow calendar.</p>
-              <p style={{fontSize:10,color:'var(--text2)',marginBottom:10}}><strong>Google:</strong> Settings → Import & Export → Export &nbsp;|&nbsp; <strong>Apple:</strong> File → Export</p>
-              <button onClick={()=>icsImportRef.current?.click()} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--bg)',color:'var(--text)',border:'2px solid var(--border)',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora',transition:'all 0.2s'}} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--primary)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>
-                ⬆ Upload .ics from Google / Apple
-              </button>
+              <p style={{fontSize:13,fontWeight:600,color:'var(--text)',marginBottom:8}}>📥 Import from Google / Apple</p>
+              <button onClick={()=>icsImportRef.current?.click()} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'11px',background:'var(--bg)',color:'var(--text)',border:'2px solid var(--border)',borderRadius:12,fontWeight:600,fontSize:13,cursor:'pointer',fontFamily:'Sora'}} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--primary)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>⬆ Upload .ics from Google / Apple</button>
               <input ref={icsImportRef} type="file" accept=".ics,text/calendar" onChange={handleICSImport} style={{display:'none'}}/>
               {importMsg&&<div style={{marginTop:10,padding:'10px 14px',background:importMsg.startsWith('✅')?'rgba(67,198,172,0.12)':'rgba(255,101,132,0.12)',borderRadius:10,fontSize:13,fontWeight:500,color:importMsg.startsWith('✅')?'var(--success)':'#FF6584'}}>{importMsg}</div>}
               {(data.importedCalEvents||[]).length>0&&(
                 <div style={{marginTop:10,padding:'12px 14px',background:'var(--card)',borderRadius:10,border:'1px solid var(--border)'}}>
                   <div style={{fontSize:12,fontWeight:600,color:'var(--text)',marginBottom:6}}>{data.importedCalEvents.length} imported events</div>
                   <div style={{maxHeight:70,overflowY:'auto',display:'flex',flexDirection:'column',gap:3}}>
-                    {data.importedCalEvents.slice(0,4).map((ev,i)=>(
-                      <div key={i} style={{fontSize:11,color:'var(--text2)',display:'flex',gap:8,alignItems:'center'}}>
-                        <span style={{color:'var(--success)',flexShrink:0,fontWeight:600}}>{ev.date}</span>
-                        <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.summary}</span>
-                      </div>
-                    ))}
+                    {data.importedCalEvents.slice(0,4).map((ev,i)=><div key={i} style={{fontSize:11,color:'var(--text2)',display:'flex',gap:8,alignItems:'center'}}><span style={{color:'var(--success)',flexShrink:0,fontWeight:600}}>{ev.date}</span><span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ev.summary}</span></div>)}
                     {data.importedCalEvents.length>4&&<div style={{fontSize:11,color:'var(--text2)'}}>+{data.importedCalEvents.length-4} more</div>}
                   </div>
                   <button onClick={()=>saveD({...data,importedCalEvents:[]})} style={{marginTop:6,background:'none',border:'none',color:'#FF6584',fontSize:11,cursor:'pointer',fontWeight:600}}>🗑 Remove imported events</button>
@@ -325,7 +477,6 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   )
 }
 
-/* ── Layout ── */
 function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}){
   const[showProfile,setShowProfile]=useState(false)
   const[showThemePicker,setShowThemePicker]=useState(false)
@@ -337,38 +488,49 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}
   const sidebarText=isDark?'rgba(255,255,255,0.75)':'var(--text2)'
   const sidebarActive=isDark?'white':T['--primary']
   const sidebarActiveBg=isDark?'rgba(255,255,255,0.12)':`${T['--primary']}18`
+
   const handleTheme=t=>{setTheme(t);applyTheme(t);saveD({...data,theme:t})}
-  const themeIcons={batman:'🦇',avengers:'⚡',barbie:'💖',unicorn:'✨',anime:'⚔️',nature:'🌿',cars:'🔥'}
+
   return(
-    <div style={{display:'flex',minHeight:'100vh',background:T['--bg']}}>
-      <div className="sidebar-fixed" style={{width:252,background:T.sidebarBg||'var(--sidebar)',borderRight:`1px solid ${isDark?'rgba(255,255,255,0.06)':'var(--border)'}`,display:'flex',flexDirection:'column',padding:'22px 14px',position:'fixed',top:0,left:0,height:'100vh',zIndex:100,overflow:'hidden',transition:'background 0.3s'}}>
-        <SidebarCharacter theme={theme}/>
+  <div style={{display:'flex',minHeight:'100vh',background:T['--bg']}}>
+      <div style={{width:252,background:T.sidebarBg||'var(--sidebar)',borderRight:`1px solid ${isDark?'rgba(255,255,255,0.08)':'var(--border)'}`,display:'flex',flexDirection:'column',padding:'22px 14px',position:'fixed',top:0,left:0,height:'100vh',zIndex:100,overflow:'hidden',transition:'background 0.3s'}}>
+        {/* Decorations */}
+        {T.decoration&&(
+          <div style={{position:'absolute',bottom:70,right:8,fontSize:28,lineHeight:1.6,pointerEvents:'none',userSelect:'none',opacity:0.25}}>
+            {T.decoration.map((e,i)=><div key={i}>{e}</div>)}
+          </div>
+        )}
+        {/* Logo */}
         <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:32,paddingLeft:8,position:'relative',zIndex:1}}>
           <span style={{fontSize:26}}>{T.sidebarEmoji||'📚'}</span>
           <span style={{fontFamily:'Sora',fontWeight:800,fontSize:19,color:T['--primary']}}>StudyFlow</span>
         </div>
+        {/* Nav */}
         <nav style={{flex:1,position:'relative',zIndex:1}}>
           <p style={{fontSize:10,fontWeight:700,color:sidebarText,textTransform:'uppercase',letterSpacing:1,paddingLeft:16,marginBottom:8,opacity:0.6}}>Menu</p>
           {nav.map(([id,icon,label])=>(
             <div key={id} className="navitem" style={{color:active===id?sidebarActive:sidebarText,background:active===id?sidebarActiveBg:'transparent',fontWeight:active===id?700:500}} onClick={()=>setPage(id)}>
-              <span style={{fontSize:17}}>{icon}</span>
-              <span>{label}</span>
-              {active===id&&themeIcons[theme]&&<span style={{marginLeft:'auto',fontSize:12,opacity:0.7}}>{themeIcons[theme]}</span>}
+              <span style={{fontSize:17}}>{icon}</span><span>{label}</span>
+              {active===id&&T.decoration&&<span style={{marginLeft:'auto',fontSize:12}}>{T.decoration[0]}</span>}
             </div>
           ))}
         </nav>
-        <div style={{borderTop:`1px solid ${isDark?'rgba(255,255,255,0.08)':'var(--border)'}`,paddingTop:14,position:'relative',zIndex:1}}>
+        {/* Bottom */}
+        <div style={{borderTop:`1px solid ${isDark?'rgba(255,255,255,0.1)':'var(--border)'}`,paddingTop:14,position:'relative',zIndex:1}}>
+          {/* Dark toggle */}
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 16px',marginBottom:4}}>
             <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8}}>🌙 Dark</span>
             <div onClick={()=>handleTheme(isDark?'light':'dark')} style={{width:36,height:20,borderRadius:50,background:isDark?T['--primary']:'#ddd',cursor:'pointer',position:'relative',transition:'background 0.3s'}}>
               <div style={{width:16,height:16,borderRadius:'50%',background:'white',position:'absolute',top:2,left:isDark?18:2,transition:'left 0.2s',boxShadow:'0 1px 4px rgba(0,0,0,0.2)'}}/>
             </div>
           </div>
+          {/* Theme button */}
           <div onClick={()=>setShowThemePicker(true)} style={{display:'flex',alignItems:'center',gap:8,padding:'9px 16px',borderRadius:10,cursor:'pointer',marginBottom:4,transition:'all 0.15s'}} onMouseEnter={e=>e.currentTarget.style.background=sidebarActiveBg} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
             <span style={{fontSize:15}}>{T.emoji}</span>
             <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8,flex:1}}>Theme: {T.name}</span>
             <span style={{fontSize:11,color:T['--primary'],fontWeight:700}}>Change</span>
           </div>
+          {/* Profile */}
           <div onClick={()=>setShowProfile(true)} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:isDark?'rgba(255,255,255,0.06)':'var(--bg)',borderRadius:12,marginBottom:8,cursor:'pointer',transition:'opacity 0.15s'}} onMouseEnter={e=>e.currentTarget.style.opacity='0.8'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
             {data.avatar?<img src={data.avatar} style={{width:36,height:36,borderRadius:'50%',objectFit:'cover',flexShrink:0}}/>:<div style={{width:36,height:36,borderRadius:'50%',background:`linear-gradient(135deg,${T['--primary']},${T['--success']})`,display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:800,fontSize:15,flexShrink:0}}>{displayName?.[0]?.toUpperCase()}</div>}
             <div style={{overflow:'hidden',flex:1}}>
@@ -379,9 +541,77 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}
           <div className="navitem" style={{color:'#FF6584'}} onClick={onSignOut||(() => { localStorage.removeItem(SESS); window.location.reload() })}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
         </div>
       </div>
-      <main className={theme==='batman'?'batman-bg':''} style={{marginLeft:252,flex:1,padding:32,minHeight:'100vh',background:theme==='batman'?undefined:T['--bg'],transition:'background 0.3s'}}>{children}</main>
-      {showProfile&&<ProfilePanel user={user} data={data} saveD={saveD} onClose={()=>setShowProfile(false)} onNameChange={n=>setDisplayName(n)}/>}
-      {showThemePicker&&<ThemePicker currentTheme={theme} onSelect={handleTheme} onClose={()=>setShowThemePicker(false)}/>}
+      <main
+        className={theme==='batman'?'batman-bg':''}
+        style={{
+          marginLeft:252,
+          flex:1,
+          padding:32,
+          minHeight:'100vh',
+          background:theme==='batman'?undefined:T['--bg'],
+          transition:'background 0.3s'
+        }}>
+        {children}
+      </main>
+
+      {/* ✅ FIX: Modals are now actually rendered in the JSX */}
+      {showThemePicker&&(
+        <ThemePicker
+          currentTheme={theme}
+          onSelect={handleTheme}
+          onClose={()=>setShowThemePicker(false)}
+        />
+      )}
+      {showProfile&&(
+        <ProfilePanel
+          user={user}
+          data={data}
+          saveD={saveD}
+          onClose={()=>setShowProfile(false)}
+          onNameChange={name=>{setDisplayName(name)}}
+        />
+      )}
+ </div>
+  )
+}
+
+/* ════════ SMART STUDY ════════ */
+function SmartStudyModal({data,onClose,setPage,setSelSubject,setSelCourse}){
+  const weak=[]
+  ;(data.courses||[]).forEach(course=>{;(course.subjects||[]).forEach(subject=>{;(subject.chapters||[]).forEach(ch=>{if(!ch.done){const examWeight=(course.exams||[]).filter(ex=>ex.chapters?.[`${subject.id}_${ch.id}`]).length;weak.push({ch,subject,course,confidence:ch.confidence||0,examWeight,urgency:(5-(ch.confidence||0))+(examWeight*2)})}})})})
+  const top3=weak.sort((a,b)=>b.urgency-a.urgency).slice(0,3)
+  const urgColor=u=>u>=8?'#FF6584':u>=5?'#FFB347':'#43C6AC'
+  const urgLabel=u=>u>=8?'🔴 High':u>=5?'🟡 Medium':'🟢 Low'
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={onClose}>
+      <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:500,maxWidth:'95vw',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.3)'}} onClick={e=>e.stopPropagation()}>
+        <div style={{background:'linear-gradient(135deg,var(--primary),#A78BFA)',padding:'22px 26px'}}><div style={{display:'flex',alignItems:'center',gap:12}}><div style={{fontSize:32}}>🧠</div><div><h3 style={{fontSize:19,fontWeight:800,color:'white',marginBottom:2}}>Smart Study</h3><p style={{fontSize:13,color:'rgba(255,255,255,0.8)'}}>Your weakest chapters — focus here first!</p></div></div></div>
+        <div style={{padding:22}}>
+          {top3.length===0?(<div style={{textAlign:'center',padding:'28px 0'}}><div style={{fontSize:52,marginBottom:10}}>🎉</div><h3 style={{fontWeight:700,fontSize:17,color:'var(--text)',marginBottom:6}}>All caught up!</h3><p style={{color:'var(--text2)',fontSize:13}}>You've completed all chapters. Amazing!</p></div>):(
+            <>
+              <p style={{fontSize:13,color:'var(--text2)',marginBottom:14}}>Based on confidence & exam weight, study these <strong style={{color:'var(--text)'}}>3 chapters</strong> right now:</p>
+              <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:16}}>
+                {top3.map(({ch,subject,course,confidence,examWeight,urgency},i)=>(
+                  <div key={ch.id} style={{display:'flex',alignItems:'center',gap:12,padding:'14px 16px',background:'var(--bg)',borderRadius:14,border:`2px solid ${urgColor(urgency)}33`,cursor:'pointer',transition:'all 0.15s'}} onClick={()=>{setSelCourse(course.id);setSelSubject({subjectId:subject.id,courseId:course.id});setPage('subject');onClose()}} onMouseEnter={e=>e.currentTarget.style.background='var(--hover)'} onMouseLeave={e=>e.currentTarget.style.background='var(--bg)'}>
+                    <div style={{width:34,height:34,borderRadius:'50%',background:`${urgColor(urgency)}22`,border:`2px solid ${urgColor(urgency)}`,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,color:urgColor(urgency),flexShrink:0}}>{i+1}</div>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14,color:'var(--text)',marginBottom:2,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ch.name}</div>
+                      <div style={{fontSize:11,color:'var(--text2)',marginBottom:4}}>{subject.name} · {course.name}</div>
+                      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                        <div style={{display:'flex',gap:2}}>{[1,2,3,4,5].map(s=><span key={s} style={{fontSize:11,opacity:confidence>=s?1:0.2}}>⭐</span>)}</div>
+                        {examWeight>0&&<span style={{background:'rgba(255,101,132,0.12)',color:'#FF6584',borderRadius:50,padding:'2px 8px',fontSize:10,fontWeight:600}}>📝 {examWeight} exam{examWeight>1?'s':''}</span>}
+                        <span style={{fontSize:10,fontWeight:600,color:urgColor(urgency)}}>{urgLabel(urgency)}</span>
+                      </div>
+                    </div>
+                    <span style={{fontSize:12,color:'var(--primary)',fontWeight:600,flexShrink:0}}>Study →</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+          <div style={{display:'flex',justifyContent:'center',marginTop:14}}><Btn onClick={onClose}>Got it!</Btn></div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -594,6 +824,10 @@ function CoursesPage({user,data,saveD,setPage,setSelCourse}){
           })}
         </div>
       )}
+
+      {/* Theme Character — always shows below courses */}
+      <ThemeCharacter theme={data.theme || 'light'} />
+
       {modal&&<Modal title="Add New Course 📚" onClose={()=>setModal(false)}><SI label="Course Name *" placeholder="e.g. Mathematics, Physics..." value={form.name} onChange={v=>setForm({...form,name:v})}/><div style={{marginTop:14}}><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:10}}>Color</label><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{PALETTE.map(c=><div key={c} onClick={()=>setForm({...form,color:c})} style={{width:28,height:28,borderRadius:'50%',background:c,cursor:'pointer',border:form.color===c?'3px solid var(--text)':'3px solid transparent',transform:form.color===c?'scale(1.2)':'scale(1)',transition:'all 0.15s'}}/>)}</div></div><div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20}}><GBtn onClick={()=>setModal(false)}>Cancel</GBtn><Btn onClick={addCourse}>Add Course</Btn></div></Modal>}
     </div>
   )
@@ -979,6 +1213,8 @@ function ProgressPage({user,data,setPage,setSelCourse}){
 }
 
 /* ════════ POMODORO ════════ */
+// Timer state (running, timeLeft, mode, cycles) is lifted to App so it
+// survives navigation. PomodoroPage receives them as props.
 function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,mode,setMode,cycles,setCycles}){
   const[session,setSession]=useState(data.pomoSession||25)
   const[breakT,setBreakT]=useState(data.pomoBreak||5)
@@ -994,13 +1230,11 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const[timerFont,setTimerFont]=useState(data.timerFont||'Sora')
   const[alertSound,setAlertSound]=useState(data.alertSound||'bell')
   const intervalRef=useRef(null)
+  const endTimeRef=useRef(null)
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
+
   useEffect(()=>{if(!running)setTimeLeft(durations[mode])},[mode,session,breakT,longBreak])
-  useEffect(()=>{
-    if(isFullscreen){document.body.classList.add('pomo-fullscreen-active')}
-    else{document.body.classList.remove('pomo-fullscreen-active')}
-    return()=>document.body.classList.remove('pomo-fullscreen-active')
-  },[isFullscreen])
+
   const playSound=useCallback((type)=>{
     try{
       const ctx=new(window.AudioContext||window.webkitAudioContext)()
@@ -1013,19 +1247,53 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       };(sounds[type]||sounds.bell)()
     }catch(e){}
   },[])
+
+  const handleDone=useCallback(()=>{
+    clearInterval(intervalRef.current)
+    setRunning(false)
+    endTimeRef.current=null
+    playSound(alertSound)
+    if(mode==='pomodoro'){
+      setCycles(c=>c+1)
+      saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})
+    }
+    setTimeLeft(durations[mode])
+  },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
+
+  const tick=useCallback(()=>{
+    if(!endTimeRef.current)return
+    const remaining=Math.round((endTimeRef.current-Date.now())/1000)
+    if(remaining<=0){handleDone()}
+    else{setTimeLeft(remaining)}
+  },[handleDone,setTimeLeft])
+
+  // Start/stop interval based on running prop
   useEffect(()=>{
     if(running){
-      intervalRef.current=setInterval(()=>{
-        setTimeLeft(t=>{
-          if(t<=1){clearInterval(intervalRef.current);setRunning(false);playSound(alertSound);if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})};return durations[mode]}
-          return t-1
-        })
-      },1000)
-    }else clearInterval(intervalRef.current)
+      endTimeRef.current=Date.now()+timeLeft*1000
+      intervalRef.current=setInterval(tick,500)
+    }else{
+      clearInterval(intervalRef.current)
+      // Don't null endTimeRef here — pause preserves the remaining time
+    }
     return()=>clearInterval(intervalRef.current)
-  },[running,mode,session,breakT,longBreak,alertSound])
-  const reset=()=>{setRunning(false);setTimeLeft(durations[mode])}
-  const skip=()=>{setRunning(false);setMode(m=>m==='pomodoro'?'short':'pomodoro')}
+  },[running])
+
+  // Re-sync display when tab becomes visible again
+  useEffect(()=>{
+    const onVisible=()=>{
+      if(!document.hidden&&running&&endTimeRef.current){
+        const remaining=Math.round((endTimeRef.current-Date.now())/1000)
+        if(remaining<=0){handleDone()}
+        else{setTimeLeft(remaining)}
+      }
+    }
+    document.addEventListener('visibilitychange',onVisible)
+    return()=>document.removeEventListener('visibilitychange',onVisible)
+  },[running,handleDone,setTimeLeft])
+
+  const reset=()=>{setRunning(false);endTimeRef.current=null;setTimeLeft(durations[mode])}
+  const skip=()=>{setRunning(false);endTimeRef.current=null;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
   const getEmbedUrl=url=>{if(!url)return null;const m1=url.match(/playlist\/([a-zA-Z0-9]+)/);if(m1)return`https://open.spotify.com/embed/playlist/${m1[1]}?utm_source=generator&theme=0`;const m2=url.match(/album\/([a-zA-Z0-9]+)/);if(m2)return`https://open.spotify.com/embed/album/${m2[1]}?utm_source=generator&theme=0`;const m3=url.match(/track\/([a-zA-Z0-9]+)/);if(m3)return`https://open.spotify.com/embed/track/${m3[1]}?utm_source=generator&theme=0`;return null}
   const embedUrl=getEmbedUrl(spotifyUrl)
   const getBgStyle=()=>{if(bg==='uploaded'&&uploadedBg)return{background:`url(${uploadedBg}) center/cover`};return{background:POMO_BGS[bg]||POMO_BGS.lofi1}}
@@ -1056,7 +1324,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:8,marginBottom:44}}>
           {[['pomodoro','pomodoro'],['short','short break'],['long','long break']].map(([key,label])=>(
-            <button key={key} onClick={()=>{setMode(key);setRunning(false)}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
+            <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
               {label}
             </button>
           ))}
@@ -1074,66 +1342,18 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       </div>
 
       {showSpotify&&(
-  <div style={{position:'absolute',bottom:24,left:24,zIndex:2,width:340}} className="pop">
-    {embedUrl?(
-      <div>
-        <iframe
-          src={embedUrl}
-          width="340" height="152"
-          frameBorder="0"
-          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-          loading="lazy"
-          style={{borderRadius:16,display:'block',boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}
-        />
-        {/* Premium note */}
-        <div style={{marginTop:8,background:'rgba(0,0,0,0.6)',borderRadius:12,padding:'8px 14px',backdropFilter:'blur(10px)',border:'1px solid rgba(255,255,255,0.1)'}}>
-          <p style={{fontSize:11,color:'rgba(255,255,255,0.6)',marginBottom:6,lineHeight:1.5}}>
-            ⚠️ <strong style={{color:'rgba(255,255,255,0.85)'}}>Spotify Free</strong> users hear 30-sec previews only. Full songs need <strong style={{color:'#1DB954'}}>Spotify Premium</strong>.
-          </p>
-          <button
-            onClick={()=>{
-              // Extract playlist/track URL and open in Spotify
-              const url=spotifyUrl.includes('spotify.com')?spotifyUrl:`https://open.spotify.com`
-              window.open(url,'_blank')
-            }}
-            style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:8,padding:'9px',background:'#1DB954',border:'none',borderRadius:10,color:'white',fontWeight:700,fontSize:13,cursor:'pointer',fontFamily:'Sora'}}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-            Open Full Song in Spotify App
-          </button>
+        <div style={{position:'absolute',bottom:24,left:24,zIndex:2,width:330}} className="pop">
+          {embedUrl?(<div><iframe src={embedUrl} width="330" height="152" frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" style={{borderRadius:16,display:'block',boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}/><button onClick={()=>{setSpotifyUrl('');setSpotifyInput('');saveD({...data,spotifyUrl:''})}} style={{marginTop:8,background:'rgba(0,0,0,0.5)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:50,padding:'6px 16px',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer'}}>× Change playlist</button></div>):(
+            <div style={{background:'rgba(0,0,0,0.65)',borderRadius:18,padding:22,backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.15)'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}><svg width="22" height="22" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg><p style={{color:'white',fontSize:15,fontWeight:700}}>Spotify Player</p></div>
+              <p style={{color:'rgba(255,255,255,0.5)',fontSize:12,marginBottom:14}}>Paste a playlist, album or track link</p>
+              <input value={spotifyInput} onChange={e=>setSpotifyInput(e.target.value)} placeholder="https://open.spotify.com/playlist/..." style={{width:'100%',padding:'11px 14px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.08)',color:'white',fontSize:13,outline:'none',marginBottom:12}} onFocus={e=>e.target.style.borderColor='#1DB954'} onBlur={e=>e.target.style.borderColor='rgba(255,255,255,0.2)'}/>
+              <button onClick={()=>{setSpotifyUrl(spotifyInput);saveD({...data,spotifyUrl:spotifyInput})}} style={{width:'100%',padding:'12px',background:'#1DB954',border:'none',borderRadius:12,color:'white',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Sora,sans-serif'}}>▶ Load Player</button>
+            </div>
+          )}
         </div>
-        <button
-          onClick={()=>{setSpotifyUrl('');setSpotifyInput('');saveD({...data,spotifyUrl:''})}}
-          style={{marginTop:8,background:'rgba(0,0,0,0.5)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:50,padding:'6px 16px',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer'}}>
-          × Change playlist
-        </button>
-      </div>
-    ):(
-      <div style={{background:'rgba(0,0,0,0.65)',borderRadius:18,padding:22,backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.15)'}}>
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:6}}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="#1DB954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-          <p style={{color:'white',fontSize:15,fontWeight:700}}>Spotify Player</p>
-        </div>
-        <p style={{color:'rgba(255,255,255,0.5)',fontSize:12,marginBottom:6,lineHeight:1.5}}>Paste a playlist, album or track link</p>
-        <p style={{color:'rgba(255,255,255,0.35)',fontSize:11,marginBottom:12,lineHeight:1.5}}>
-          💡 Tip: <strong style={{color:'rgba(255,255,255,0.55)'}}>Spotify Premium</strong> plays full songs. Free accounts play 30-sec previews.
-        </p>
-        <input
-          value={spotifyInput}
-          onChange={e=>setSpotifyInput(e.target.value)}
-          placeholder="https://open.spotify.com/playlist/..."
-          style={{width:'100%',padding:'11px 14px',borderRadius:12,border:'1px solid rgba(255,255,255,0.2)',background:'rgba(255,255,255,0.08)',color:'white',fontSize:13,outline:'none',marginBottom:12}}
-          onFocus={e=>e.target.style.borderColor='#1DB954'}
-          onBlur={e=>e.target.style.borderColor='rgba(255,255,255,0.2)'}
-        />
-        <button
-          onClick={()=>{setSpotifyUrl(spotifyInput);saveD({...data,spotifyUrl:spotifyInput})}}
-          style={{width:'100%',padding:'12px',background:'#1DB954',border:'none',borderRadius:12,color:'white',fontWeight:700,fontSize:15,cursor:'pointer',fontFamily:'Sora'}}>
-          ▶ Load Player
-        </button>
-      </div>
-    )}
-  </div>
-)}
+      )}
+
       {showSettings&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={()=>setShowSettings(false)}>
           <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:520,maxWidth:'95vw',maxHeight:'88vh',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}} onClick={e=>e.stopPropagation()}>
@@ -1221,8 +1441,9 @@ function GBtn({children,onClick}){return <button onClick={onClick} style={{displ
 function SI({label,type='text',placeholder,value,onChange,onEnter}){return <div><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:5}}>{label}</label><input type={type} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&onEnter?.()} style={{width:'100%',padding:'11px 13px',border:'2px solid var(--border)',borderRadius:10,background:'var(--input)',color:'var(--text)',fontSize:14,outline:'none',transition:'border 0.2s'}} onFocus={e=>e.target.style.borderColor='var(--primary)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>}
 function Modal({title,children,onClose,wide}){return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(4px)'}} onClick={onClose}><div className="pop" style={{background:'var(--card)',borderRadius:20,padding:28,width:wide?560:440,maxWidth:'95vw',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 60px rgba(0,0,0,0.2)'}} onClick={e=>e.stopPropagation()}><h3 style={{fontSize:18,fontWeight:800,marginBottom:16,color:'var(--text)'}}>{title}</h3>{children}</div></div>}
 
+/* ════════ ROOT ════════ */
 export default function App(){
-  const[user,setUser]=useState(null)
+  const[user,setUser]=useState(null)         // { id, email, name }
   const[data,setData]=useState(defaultData())
   const[page,setPage]=useState('dashboard')
   const[selCourse,setSelCourse]=useState(null)
@@ -1230,7 +1451,7 @@ export default function App(){
   const[theme,setTheme]=useState('light')
   const[ready,setReady]=useState(false)
 
-  // Lifted Pomodoro state — survives navigation
+  // Lifted Pomodoro state
   const[pomoRunning,setPomoRunning]=useState(false)
   const[pomoTimeLeft,setPomoTimeLeft]=useState(25*60)
   const[pomoMode,setPomoMode]=useState('pomodoro')
@@ -1239,9 +1460,10 @@ export default function App(){
   useEffect(()=>{ applyTheme(theme) },[theme])
   useEffect(()=>{ setReady(true) },[])
 
-  const handleLogin=(u,d)=>{
+  // Called by AuthPage when login/session-restore succeeds
+  const handleLogin = (u, d) => {
     setUser(u)
-    const finalD=d||defaultData()
+    const finalD = d || defaultData()
     setData(finalD)
     setTheme(finalD.theme||'light')
     applyTheme(finalD.theme||'light')
@@ -1249,22 +1471,24 @@ export default function App(){
     setReady(true)
   }
 
-  const saveD=updated=>{
+  // Save: local cache first (instant), then debounced cloud sync
+  const saveD = updated => {
     setData(updated)
     if(user?.id){
-      setLocalCache(user.id,updated)
-      scheduleSync(user.id,updated)
+      setLocalCache(user.id, updated)
+      scheduleSync(user.id, updated)
     }
   }
 
-  const signOut=async()=>{
-    try{await supa.signOut()}catch(e){}
+  // Sign out via SDK
+  const signOut = async () => {
+    try { await supa.signOut() } catch(e){}
     setUser(null)
     setData(defaultData())
     setPage('dashboard')
   }
 
-  if(!ready)return(
+  if(!ready) return(
     <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#F4F3FF'}}>
       <div style={{textAlign:'center'}}>
         <div style={{fontSize:48,marginBottom:12}}>📚</div>
@@ -1273,14 +1497,14 @@ export default function App(){
     </div>
   )
 
-  if(!user)return <AuthPage onLogin={handleLogin}/>
+  if(!user) return <AuthPage onLogin={handleLogin}/>
 
   const pomoProps={
-    user,data,saveD,
-    running:pomoRunning,setRunning:setPomoRunning,
-    timeLeft:pomoTimeLeft,setTimeLeft:setPomoTimeLeft,
-    mode:pomoMode,setMode:setPomoMode,
-    cycles:pomoCycles,setCycles:setPomoCycles,
+    user, data, saveD,
+    running:pomoRunning, setRunning:setPomoRunning,
+    timeLeft:pomoTimeLeft, setTimeLeft:setPomoTimeLeft,
+    mode:pomoMode, setMode:setPomoMode,
+    cycles:pomoCycles, setCycles:setPomoCycles,
   }
 
   const renderPage=()=>{
@@ -1291,7 +1515,7 @@ export default function App(){
     return <Dashboard user={user} data={data} saveD={saveD} setPage={setPage} setSelCourse={setSelCourse} setSelSubject={setSelSubject}/>
   }
 
-  const modeLabel=pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
+  const modeLabel = pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
 
   return(
     <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD} onSignOut={signOut}>
