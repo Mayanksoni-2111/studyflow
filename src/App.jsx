@@ -28,18 +28,10 @@ td{padding:12px 16px;font-size:14px;}
 .cal-day{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;margin:0 auto;transition:all 0.15s;}
 .batman-bg{background-color:#f0a500;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'%3E%3Cg fill='%231a0800' opacity='0.55'%3E%3Cpath d='M20 28 Q10 18 2 22 Q8 24 10 28 Q6 26 4 30 Q10 28 14 32 Q12 36 14 40 Q18 34 20 36 Q22 34 26 40 Q28 36 26 32 Q30 28 36 30 Q34 26 36 22 Q28 18 20 28Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.4'%3E%3Cpath d='M72 52 Q64 44 58 47 Q63 49 64 52 Q61 51 60 54 Q65 52 68 56 Q66 59 68 62 Q71 57 72 59 Q73 57 76 62 Q78 59 76 56 Q79 52 84 54 Q83 51 84 47 Q78 44 72 52Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.3'%3E%3Cpath d='M82 12 Q76 6 72 9 Q76 10 76 13 Q74 12 73 14 Q76 13 78 16 Q77 18 78 20 Q80 17 81 18 Q82 17 84 20 Q85 18 84 16 Q86 13 90 14 Q89 11 90 8 Q86 5 82 12Z'/%3E%3C/g%3E%3C/svg%3E");background-size:100px 70px;}
 `;document.head.appendChild(st)
- 
 
- 
-
-
-// ═══════════════════════════════════════════════════════
-//  SUPABASE — official JS SDK loaded via CDN
-// ═══════════════════════════════════════════════════════
 const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
 const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
 
-// Inject the SDK script once at module load time
 if(!window.__supaLoaded){
   window.__supaLoaded = true
   const s = document.createElement('script')
@@ -47,7 +39,6 @@ if(!window.__supaLoaded){
   document.head.appendChild(s)
 }
 
-// Lazily get/create the client once the SDK has loaded
 let _client = null
 function getClient(){
   if(_client) return _client
@@ -59,21 +50,19 @@ function getClient(){
   return _client
 }
 
-// Wait up to 6 s for the CDN script to finish loading
 function waitClient(){
   return new Promise((res,rej)=>{
     const t0 = Date.now()
     const poll = ()=>{
       const c = getClient()
       if(c) return res(c)
-      if(Date.now()-t0 > 6000) return rej(new Error('Supabase SDK did not load — check internet connection'))
+      if(Date.now()-t0 > 6000) return rej(new Error('Supabase SDK did not load'))
       setTimeout(poll, 100)
     }
     poll()
   })
 }
 
-// Clean async wrappers
 const supa = {
   async signUp(email, password, name){
     const c = await waitClient()
@@ -91,9 +80,10 @@ const supa = {
     const c = await waitClient()
     return c.auth.getSession()
   },
+  // avatar is now included in the sync (uploadedBg is the only skipped blob)
   async upsertData(userId, payload){
     const c = await waitClient()
-    const { avatar, uploadedBg, ...safe } = payload   // skip large base64 blobs
+    const { uploadedBg, ...safe } = payload
     return c.from('user_data').upsert(
       { user_id: userId, data: safe, updated_at: new Date().toISOString() },
       { onConflict: 'user_id' }
@@ -105,12 +95,42 @@ const supa = {
     if(error) return null
     return data?.data || null
   },
+  // Patch ONLY the avatar field — reads current row, sets avatar to new value, writes back.
+  // Pass null to delete the old avatar, pass a base64 string to save a new one.
+  async patchAvatar(userId, avatarValue){
+    const c = await waitClient()
+    const { data: row, error } = await c.from('user_data').select('data').eq('user_id', userId).single()
+    if(error || !row) return
+    const merged = { ...(row.data || {}), avatar: avatarValue }
+    return c.from('user_data').update({ data: merged, updated_at: new Date().toISOString() }).eq('user_id', userId)
+  },
 }
 
-// ── Session key (kept for backward compat; SDK manages tokens itself) ──
+// ── Avatar compression — max 200KB, 400×400px ──────────────
+function compressAvatar(file){
+  return new Promise((res,rej)=>{
+    const MAX_BYTES=200*1024, MAX_DIM=400
+    const img=new Image()
+    const url=URL.createObjectURL(file)
+    img.onload=()=>{
+      URL.revokeObjectURL(url)
+      const canvas=document.createElement('canvas')
+      let {width:w,height:h}=img
+      if(w>MAX_DIM||h>MAX_DIM){const r=Math.min(MAX_DIM/w,MAX_DIM/h);w=Math.round(w*r);h=Math.round(h*r)}
+      canvas.width=w; canvas.height=h
+      canvas.getContext('2d').drawImage(img,0,0,w,h)
+      let dataUrl=canvas.toDataURL('image/jpeg',0.85)
+      if(dataUrl.length>MAX_BYTES*1.37) dataUrl=canvas.toDataURL('image/jpeg',0.6)
+      if(dataUrl.length>MAX_BYTES*1.37) dataUrl=canvas.toDataURL('image/jpeg',0.4)
+      res(dataUrl)
+    }
+    img.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('Image load failed'))}
+    img.src=url
+  })
+}
+
 const SESS = 'sf_sess'
 
-// ── Default data shape ────────────────────────────────────
 const defaultData = () => ({
   courses:[], planner:[], sessions:[],
   pomoBg:'lofi1', pomoSession:25, pomoBreak:5, pomoLong:15,
@@ -120,12 +140,10 @@ const defaultData = () => ({
   displayName:'', importedCalEvents:[],
 })
 
-// ── Local cache (instant reads, works offline) ────────────
 const localKey = uid => `sf_cache_${uid}`
 const getLocalCache = uid => { try { return JSON.parse(localStorage.getItem(localKey(uid))) || defaultData() } catch { return defaultData() } }
 const setLocalCache = (uid, d) => localStorage.setItem(localKey(uid), JSON.stringify(d))
 
-// ── Debounced cloud sync ──────────────────────────────────
 let _syncTimer = null
 const scheduleSync = (userId, data) => {
   clearTimeout(_syncTimer)
@@ -134,7 +152,6 @@ const scheduleSync = (userId, data) => {
   }, 1500)
 }
 
-// ── Auth Page ─────────────────────────────────────────────
 function AuthPage({onLogin}){
   const[mode,setMode]=useState('login')
   const[form,setForm]=useState({name:'',email:'',password:''})
@@ -142,11 +159,9 @@ function AuthPage({onLogin}){
   const[loading,setLoading]=useState(false)
   const[sdkReady,setSdkReady]=useState(false)
 
-  // Wait for SDK, then check existing session
   useEffect(()=>{
     waitClient().then(async c => {
       setSdkReady(true)
-      // Restore existing session if still valid
       const { data:{ session } } = await c.auth.getSession()
       if(session?.user){
         const uid = session.user.id
@@ -172,7 +187,6 @@ function AuthPage({onLogin}){
         const { data, error } = await supa.signUp(form.email.trim(), form.password, form.name.trim())
         if(error){ setErr(error.message); setLoading(false); return }
         if(data?.session){
-          // Email confirmation disabled — logged in immediately
           const uid = data.user.id
           const user = { id:uid, email:data.user.email, name:form.name.trim() }
           await supa.upsertData(uid, defaultData())
@@ -245,8 +259,6 @@ function AuthPage({onLogin}){
   )
 }
 
-/* ════════ LAYOUT ════════ */
-/* ── THEMES ── */
 const THEMES={
   light:{name:'Light',emoji:'☀️','--bg':'#F4F3FF','--card':'#FFFFFF','--text':'#1a1a2e','--text2':'#6b6b8a','--border':'#EEECFF','--hover':'#FAFAFE','--sidebar':'#FFFFFF','--input':'#F4F3FF','--shadow':'0 2px 16px rgba(108,99,255,0.08)','--primary':'#6C63FF','--success':'#43C6AC','--warning':'#FFB347',sidebarEmoji:'📚',sidebarBg:'#FFFFFF',sidebarDark:false},
   dark:{name:'Dark',emoji:'🌙','--bg':'#0f0f1a','--card':'#1e1e30','--text':'#e8e6ff','--text2':'#9b99b8','--border':'#2e2e48','--hover':'#252540','--sidebar':'#15152a','--input':'#252540','--shadow':'0 2px 16px rgba(0,0,0,0.4)','--primary':'#7B74FF','--success':'#43C6AC','--warning':'#FFB347',sidebarEmoji:'📚',sidebarBg:'#15152a',sidebarDark:true},
@@ -266,7 +278,6 @@ function applyTheme(key){
   document.body.style.color=t['--text']
 }
 
-/* ════════ THEME CHARACTER ════════ */
 const THEME_CHARACTERS={
   light:{emoji:'📚',name:'Bookworm Buddy',chars:['📚','✏️','🎒','📐','🌟'],colors:['#6C63FF','#A78BFA','#43C6AC','#FFB347','#F472B6'],bg:'linear-gradient(135deg,#F4F3FF,#E8E6FF)',border:'#C4C0FF',message:'Keep studying, superstar!',animation:'bounce'},
   dark:{emoji:'🌙',name:'Night Owl',chars:['🦉','🌙','⭐','💫','🔭'],colors:['#7B74FF','#A78BFA','#43C6AC','#60A5FA','#F472B6'],bg:'linear-gradient(135deg,#1e1e30,#252540)',border:'#3a3a5c',message:'Night grind mode: ON',animation:'float'},
@@ -309,14 +320,12 @@ function ThemeCharacter({theme}){
   )
 }
 
-/* ── IndexedDB ── */
 const IDB_NAME='studyflow_pdfs',IDB_STORE='pdfs'
 function openIDB(){return new Promise((res,rej)=>{const r=indexedDB.open(IDB_NAME,1);r.onupgradeneeded=e=>e.target.result.createObjectStore(IDB_STORE);r.onsuccess=e=>res(e.target.result);r.onerror=()=>rej(r.error)})}
 async function savePDF(key,file){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).put(file,key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
 async function getPDF(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readonly');const r=tx.objectStore(IDB_STORE).get(key);r.onsuccess=()=>res(r.result||null);r.onerror=()=>rej(r.error)})}
 async function deletePDF(key){const db=await openIDB();return new Promise((res,rej)=>{const tx=db.transaction(IDB_STORE,'readwrite');tx.objectStore(IDB_STORE).delete(key);tx.oncomplete=()=>res();tx.onerror=()=>rej(tx.error)})}
 
-/* ── Constants ── */
 const COLORS=['#6C63FF','#FF6584','#43C6AC','#FFB347','#A78BFA','#F472B6','#34D399','#60A5FA']
 const POMO_BGS={gradient1:'linear-gradient(135deg,#667eea,#764ba2)',gradient2:'linear-gradient(135deg,#f093fb,#f5576c)',gradient3:'linear-gradient(135deg,#4facfe,#00f2fe)',gradient4:'linear-gradient(135deg,#43e97b,#38f9d7)',solid1:'#1a1a2e',solid2:'#2d1b69',solid3:'#0f3460',solid4:'#16213e',lofi1:'url(https://images.unsplash.com/photo-1519681393784-d120267933ba?w=1200&q=80) center/cover',lofi2:'url(https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=1200&q=80) center/cover',lofi3:'url(https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=1200&q=80) center/cover'}
 const BG_LABELS={gradient1:'Purple Dream',gradient2:'Pink Sunset',gradient3:'Ocean Blue',gradient4:'Mint Fresh',solid1:'Midnight',solid2:'Deep Purple',solid3:'Navy',solid4:'Dark Blue',lofi1:'Mountain Night',lofi2:'Mountain Lake',lofi3:'Forest'}
@@ -325,7 +334,6 @@ const daysUntil=d=>{if(!d)return null;return Math.ceil((new Date(d)-new Date())/
 const courseProgress=c=>{let t=0,d=0;(c.subjects||[]).forEach(s=>(s.chapters||[]).forEach(ch=>{t++;if(ch.done)d++}));return t?Math.round(d/t*100):0}
 const fmtTime=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`
 
-/* ════════ THEME PICKER ════════ */
 function ThemePicker({currentTheme,onSelect,onClose}){
   return(
     <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2000,backdropFilter:'blur(6px)'}} onClick={onClose}>
@@ -371,11 +379,11 @@ function ThemePicker({currentTheme,onSelect,onClose}){
   )
 }
 
-/* ════════ PROFILE PANEL ════════ */
 function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   const[name,setName]=useState(data.displayName||user.name)
   const[saved,setSaved]=useState(false)
   const[importMsg,setImportMsg]=useState('')
+  const[avatarLoading,setAvatarLoading]=useState(false)
   const avatarRef=useRef(null)
   const icsImportRef=useRef(null)
   const courses=data.courses||[]
@@ -386,7 +394,29 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   const totalChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).length,0),0)
   const doneChapters=courses.reduce((a,c)=>a+(c.subjects||[]).reduce((b,s)=>b+(s.chapters||[]).filter(ch=>ch.done).length,0),0)
   const T=THEMES[data.theme||'light']||THEMES.light
-  const handleAvatar=e=>{const file=e.target.files[0];if(!file)return;const r=new FileReader();r.onload=ev=>saveD({...data,avatar:ev.target.result});r.readAsDataURL(file)}
+
+  // ── Avatar upload: delete old from DB → compress new → save new ──
+  const handleAvatar=async e=>{
+    const file=e.target.files[0]
+    if(!file) return
+    if(!file.type.startsWith('image/')){ alert('Please select an image file.'); return }
+    setAvatarLoading(true)
+    try {
+      // Step 1: wipe old avatar from DB immediately (fire-and-forget, frees storage)
+      if(user?.id) supa.patchAvatar(user.id, null).catch(()=>{})
+      // Step 2: compress new image to ≤200KB / 400×400px
+      const compressed = await compressAvatar(file)
+      // Step 3: write new avatar to DB and update local state
+      if(user?.id) supa.patchAvatar(user.id, compressed).catch(()=>{})
+      saveD({...data, avatar: compressed})
+      // Reset so same file can be picked again next time
+      if(avatarRef.current) avatarRef.current.value=''
+    } catch(err){
+      alert('Could not process image. Please try a different file.')
+    }
+    setAvatarLoading(false)
+  }
+
   const saveName=()=>{if(!name.trim())return;saveD({...data,displayName:name.trim()});onNameChange(name.trim());setSaved(true);setTimeout(()=>setSaved(false),2000)}
   const exportICSFile=()=>{
     const lines=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//StudyFlow//EN','CALSCALE:GREGORIAN','METHOD:PUBLISH']
@@ -419,9 +449,12 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
       <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:500,maxWidth:'95vw',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 32px 80px rgba(0,0,0,0.3)'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:`linear-gradient(135deg,${T['--primary']},${T['--success']})`,padding:'26px 26px 20px',borderRadius:'22px 22px 0 0'}}>
           <div style={{display:'flex',alignItems:'center',gap:16}}>
-            <div style={{position:'relative',cursor:'pointer'}} onClick={()=>avatarRef.current?.click()}>
-              {data.avatar?<img src={data.avatar} style={{width:70,height:70,borderRadius:'50%',objectFit:'cover',border:'3px solid rgba(255,255,255,0.5)'}}/>:<div style={{width:70,height:70,borderRadius:'50%',background:'rgba(255,255,255,0.2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,fontWeight:800,color:'white',border:'3px solid rgba(255,255,255,0.4)'}}>{(data.displayName||user.name)?.[0]?.toUpperCase()}</div>}
-              <div style={{position:'absolute',bottom:0,right:0,width:22,height:22,borderRadius:'50%',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11}}>📷</div>
+            <div style={{position:'relative',cursor:avatarLoading?'wait':'pointer'}} onClick={()=>!avatarLoading&&avatarRef.current?.click()}>
+              {data.avatar
+                ?<img src={data.avatar} style={{width:70,height:70,borderRadius:'50%',objectFit:'cover',border:'3px solid rgba(255,255,255,0.5)',opacity:avatarLoading?0.5:1}}/>
+                :<div style={{width:70,height:70,borderRadius:'50%',background:'rgba(255,255,255,0.2)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26,fontWeight:800,color:'white',border:'3px solid rgba(255,255,255,0.4)',opacity:avatarLoading?0.5:1}}>{(data.displayName||user.name)?.[0]?.toUpperCase()}</div>
+              }
+              <div style={{position:'absolute',bottom:0,right:0,width:22,height:22,borderRadius:'50%',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:11}}>{avatarLoading?'⏳':'📷'}</div>
             </div>
             <div>
               <h2 style={{fontSize:19,fontWeight:800,color:'white',marginBottom:2}}>{data.displayName||user.name}</h2>
@@ -477,7 +510,8 @@ function ProfilePanel({user,data,saveD,onClose,onNameChange}){
   )
 }
 
-function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}){
+// ── Layout: accepts isFullscreen to hide sidebar when Pomodoro focus mode is on ──
+function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children,isFullscreen}){
   const[showProfile,setShowProfile]=useState(false)
   const[showThemePicker,setShowThemePicker]=useState(false)
   const[displayName,setDisplayName]=useState(data.displayName||user.name)
@@ -488,94 +522,74 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children}
   const sidebarText=isDark?'rgba(255,255,255,0.75)':'var(--text2)'
   const sidebarActive=isDark?'white':T['--primary']
   const sidebarActiveBg=isDark?'rgba(255,255,255,0.12)':`${T['--primary']}18`
-
   const handleTheme=t=>{setTheme(t);applyTheme(t);saveD({...data,theme:t})}
 
   return(
-  <div style={{display:'flex',minHeight:'100vh',background:T['--bg']}}>
-      <div style={{width:252,background:T.sidebarBg||'var(--sidebar)',borderRight:`1px solid ${isDark?'rgba(255,255,255,0.08)':'var(--border)'}`,display:'flex',flexDirection:'column',padding:'22px 14px',position:'fixed',top:0,left:0,height:'100vh',zIndex:100,overflow:'hidden',transition:'background 0.3s'}}>
-        {/* Decorations */}
-        {T.decoration&&(
-          <div style={{position:'absolute',bottom:70,right:8,fontSize:28,lineHeight:1.6,pointerEvents:'none',userSelect:'none',opacity:0.25}}>
-            {T.decoration.map((e,i)=><div key={i}>{e}</div>)}
+    <div style={{display:'flex',minHeight:'100vh',background:T['--bg']}}>
+      {/* Sidebar — fully hidden when Focus Mode is active */}
+      {!isFullscreen&&(
+        <div style={{width:252,background:T.sidebarBg||'var(--sidebar)',borderRight:`1px solid ${isDark?'rgba(255,255,255,0.08)':'var(--border)'}`,display:'flex',flexDirection:'column',padding:'22px 14px',position:'fixed',top:0,left:0,height:'100vh',zIndex:100,overflow:'hidden',transition:'background 0.3s'}}>
+          {T.decoration&&(
+            <div style={{position:'absolute',bottom:70,right:8,fontSize:28,lineHeight:1.6,pointerEvents:'none',userSelect:'none',opacity:0.25}}>
+              {T.decoration.map((e,i)=><div key={i}>{e}</div>)}
+            </div>
+          )}
+          <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:32,paddingLeft:8,position:'relative',zIndex:1}}>
+            <span style={{fontSize:26}}>{T.sidebarEmoji||'📚'}</span>
+            <span style={{fontFamily:'Sora',fontWeight:800,fontSize:19,color:T['--primary']}}>StudyFlow</span>
           </div>
-        )}
-        {/* Logo */}
-        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:32,paddingLeft:8,position:'relative',zIndex:1}}>
-          <span style={{fontSize:26}}>{T.sidebarEmoji||'📚'}</span>
-          <span style={{fontFamily:'Sora',fontWeight:800,fontSize:19,color:T['--primary']}}>StudyFlow</span>
+          <nav style={{flex:1,position:'relative',zIndex:1}}>
+            <p style={{fontSize:10,fontWeight:700,color:sidebarText,textTransform:'uppercase',letterSpacing:1,paddingLeft:16,marginBottom:8,opacity:0.6}}>Menu</p>
+            {nav.map(([id,icon,label])=>(
+              <div key={id} className="navitem" style={{color:active===id?sidebarActive:sidebarText,background:active===id?sidebarActiveBg:'transparent',fontWeight:active===id?700:500}} onClick={()=>setPage(id)}>
+                <span style={{fontSize:17}}>{icon}</span><span>{label}</span>
+                {active===id&&T.decoration&&<span style={{marginLeft:'auto',fontSize:12}}>{T.decoration[0]}</span>}
+              </div>
+            ))}
+          </nav>
+          <div style={{borderTop:`1px solid ${isDark?'rgba(255,255,255,0.1)':'var(--border)'}`,paddingTop:14,position:'relative',zIndex:1}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 16px',marginBottom:4}}>
+              <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8}}>🌙 Dark</span>
+              <div onClick={()=>handleTheme(isDark?'light':'dark')} style={{width:36,height:20,borderRadius:50,background:isDark?T['--primary']:'#ddd',cursor:'pointer',position:'relative',transition:'background 0.3s'}}>
+                <div style={{width:16,height:16,borderRadius:'50%',background:'white',position:'absolute',top:2,left:isDark?18:2,transition:'left 0.2s',boxShadow:'0 1px 4px rgba(0,0,0,0.2)'}}/>
+              </div>
+            </div>
+            <div onClick={()=>setShowThemePicker(true)} style={{display:'flex',alignItems:'center',gap:8,padding:'9px 16px',borderRadius:10,cursor:'pointer',marginBottom:4,transition:'all 0.15s'}} onMouseEnter={e=>e.currentTarget.style.background=sidebarActiveBg} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+              <span style={{fontSize:15}}>{T.emoji}</span>
+              <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8,flex:1}}>Theme: {T.name}</span>
+              <span style={{fontSize:11,color:T['--primary'],fontWeight:700}}>Change</span>
+            </div>
+            <div onClick={()=>setShowProfile(true)} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:isDark?'rgba(255,255,255,0.06)':'var(--bg)',borderRadius:12,marginBottom:8,cursor:'pointer',transition:'opacity 0.15s'}} onMouseEnter={e=>e.currentTarget.style.opacity='0.8'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
+              {data.avatar?<img src={data.avatar} style={{width:36,height:36,borderRadius:'50%',objectFit:'cover',flexShrink:0}}/>:<div style={{width:36,height:36,borderRadius:'50%',background:`linear-gradient(135deg,${T['--primary']},${T['--success']})`,display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:800,fontSize:15,flexShrink:0}}>{displayName?.[0]?.toUpperCase()}</div>}
+              <div style={{overflow:'hidden',flex:1}}>
+                <div style={{fontWeight:600,fontSize:13,color:isDark?'white':'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{displayName}</div>
+                <div style={{fontSize:10,color:T['--primary'],fontWeight:600}}>View Profile →</div>
+              </div>
+            </div>
+            <div className="navitem" style={{color:'#FF6584'}} onClick={onSignOut||(() => { localStorage.removeItem(SESS); window.location.reload() })}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
+          </div>
         </div>
-        {/* Nav */}
-        <nav style={{flex:1,position:'relative',zIndex:1}}>
-          <p style={{fontSize:10,fontWeight:700,color:sidebarText,textTransform:'uppercase',letterSpacing:1,paddingLeft:16,marginBottom:8,opacity:0.6}}>Menu</p>
-          {nav.map(([id,icon,label])=>(
-            <div key={id} className="navitem" style={{color:active===id?sidebarActive:sidebarText,background:active===id?sidebarActiveBg:'transparent',fontWeight:active===id?700:500}} onClick={()=>setPage(id)}>
-              <span style={{fontSize:17}}>{icon}</span><span>{label}</span>
-              {active===id&&T.decoration&&<span style={{marginLeft:'auto',fontSize:12}}>{T.decoration[0]}</span>}
-            </div>
-          ))}
-        </nav>
-        {/* Bottom */}
-        <div style={{borderTop:`1px solid ${isDark?'rgba(255,255,255,0.1)':'var(--border)'}`,paddingTop:14,position:'relative',zIndex:1}}>
-          {/* Dark toggle */}
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 16px',marginBottom:4}}>
-            <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8}}>🌙 Dark</span>
-            <div onClick={()=>handleTheme(isDark?'light':'dark')} style={{width:36,height:20,borderRadius:50,background:isDark?T['--primary']:'#ddd',cursor:'pointer',position:'relative',transition:'background 0.3s'}}>
-              <div style={{width:16,height:16,borderRadius:'50%',background:'white',position:'absolute',top:2,left:isDark?18:2,transition:'left 0.2s',boxShadow:'0 1px 4px rgba(0,0,0,0.2)'}}/>
-            </div>
-          </div>
-          {/* Theme button */}
-          <div onClick={()=>setShowThemePicker(true)} style={{display:'flex',alignItems:'center',gap:8,padding:'9px 16px',borderRadius:10,cursor:'pointer',marginBottom:4,transition:'all 0.15s'}} onMouseEnter={e=>e.currentTarget.style.background=sidebarActiveBg} onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
-            <span style={{fontSize:15}}>{T.emoji}</span>
-            <span style={{fontSize:12,fontWeight:600,color:sidebarText,opacity:0.8,flex:1}}>Theme: {T.name}</span>
-            <span style={{fontSize:11,color:T['--primary'],fontWeight:700}}>Change</span>
-          </div>
-          {/* Profile */}
-          <div onClick={()=>setShowProfile(true)} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 14px',background:isDark?'rgba(255,255,255,0.06)':'var(--bg)',borderRadius:12,marginBottom:8,cursor:'pointer',transition:'opacity 0.15s'}} onMouseEnter={e=>e.currentTarget.style.opacity='0.8'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>
-            {data.avatar?<img src={data.avatar} style={{width:36,height:36,borderRadius:'50%',objectFit:'cover',flexShrink:0}}/>:<div style={{width:36,height:36,borderRadius:'50%',background:`linear-gradient(135deg,${T['--primary']},${T['--success']})`,display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontWeight:800,fontSize:15,flexShrink:0}}>{displayName?.[0]?.toUpperCase()}</div>}
-            <div style={{overflow:'hidden',flex:1}}>
-              <div style={{fontWeight:600,fontSize:13,color:isDark?'white':'var(--text)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{displayName}</div>
-              <div style={{fontSize:10,color:T['--primary'],fontWeight:600}}>View Profile →</div>
-            </div>
-          </div>
-          <div className="navitem" style={{color:'#FF6584'}} onClick={onSignOut||(() => { localStorage.removeItem(SESS); window.location.reload() })}><span>🚪</span><span style={{fontSize:13}}>Sign Out</span></div>
-        </div>
-      </div>
+      )}
+
       <main
         className={theme==='batman'?'batman-bg':''}
         style={{
-          marginLeft:252,
+          marginLeft: isFullscreen ? 0 : 252,
           flex:1,
-          padding:32,
+          padding: isFullscreen ? 0 : 32,
           minHeight:'100vh',
           background:theme==='batman'?undefined:T['--bg'],
-          transition:'background 0.3s'
+          transition:'margin-left 0.3s, padding 0.3s'
         }}>
         {children}
       </main>
 
-      {/* ✅ FIX: Modals are now actually rendered in the JSX */}
-      {showThemePicker&&(
-        <ThemePicker
-          currentTheme={theme}
-          onSelect={handleTheme}
-          onClose={()=>setShowThemePicker(false)}
-        />
-      )}
-      {showProfile&&(
-        <ProfilePanel
-          user={user}
-          data={data}
-          saveD={saveD}
-          onClose={()=>setShowProfile(false)}
-          onNameChange={name=>{setDisplayName(name)}}
-        />
-      )}
- </div>
+      {showThemePicker&&<ThemePicker currentTheme={theme} onSelect={handleTheme} onClose={()=>setShowThemePicker(false)}/>}
+      {showProfile&&<ProfilePanel user={user} data={data} saveD={saveD} onClose={()=>setShowProfile(false)} onNameChange={name=>{setDisplayName(name)}}/>}
+    </div>
   )
 }
 
-/* ════════ SMART STUDY ════════ */
 function SmartStudyModal({data,onClose,setPage,setSelSubject,setSelCourse}){
   const weak=[]
   ;(data.courses||[]).forEach(course=>{;(course.subjects||[]).forEach(subject=>{;(subject.chapters||[]).forEach(ch=>{if(!ch.done){const examWeight=(course.exams||[]).filter(ex=>ex.chapters?.[`${subject.id}_${ch.id}`]).length;weak.push({ch,subject,course,confidence:ch.confidence||0,examWeight,urgency:(5-(ch.confidence||0))+(examWeight*2)})}})})})
@@ -616,7 +630,6 @@ function SmartStudyModal({data,onClose,setPage,setSelSubject,setSelCourse}){
   )
 }
 
-/* ════════ DASHBOARD ════════ */
 function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
   const[plannerView,setPlannerView]=useState('daily')
   const[newTask,setNewTask]=useState('')
@@ -629,12 +642,9 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
   const today=now.toISOString().split('T')[0]
   const daysInMonth=new Date(calYear,calMonth+1,0).getDate()
   const firstDay=new Date(calYear,calMonth,1).getDay()
-
-  // Exam dates — own + imported
   const examDates={}
   courses.forEach(c=>(c.exams||[]).forEach(ex=>{if(ex.date){const d=new Date(ex.date);if(d.getMonth()===calMonth&&d.getFullYear()===calYear){const day=d.getDate();if(!examDates[day])examDates[day]=[];examDates[day].push({name:ex.name,course:c.name,color:'#FF6584'})}}}))
   ;(data.importedCalEvents||[]).forEach(ev=>{if(ev.date){const d=new Date(ev.date+'T12:00:00');if(d.getMonth()===calMonth&&d.getFullYear()===calYear){const day=d.getDate();if(!examDates[day])examDates[day]=[];examDates[day].push({name:ev.summary,course:'Imported',color:'#43C6AC'})}}})
-
   const studyDays=new Set((data.sessions||[]).map(s=>s.date?.split('T')[0]))
   let nearestExam=null,nearestDays=Infinity
   courses.forEach(c=>(c.exams||[]).forEach(ex=>{if(ex.date){const d=daysUntil(ex.date);if(d!==null&&d>=0&&d<nearestDays){nearestDays=d;nearestExam={...ex,courseName:c.name,color:c.color}}}}))
@@ -651,7 +661,6 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
   const todayMins=todaySessions.reduce((a,s)=>a+(s.mins||0),0)
   const weekSessions=(data.sessions||[]).filter(s=>{const d=new Date(s.date);return d>=weekStart&&d<=weekEnd})
   const weekMins=weekSessions.reduce((a,s)=>a+(s.mins||0),0)
-
   return(
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:24}} className="fade">
@@ -661,9 +670,7 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
           <Btn onClick={()=>setPage('courses')}>+ Add Course</Btn>
         </div>
       </div>
-
       <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:18,marginBottom:20}}>
-        {/* Calendar */}
         <Card className="fade">
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
             <h3 style={{fontSize:14,fontWeight:700,color:'var(--text)'}}>📅 {MONTHS[calMonth]} {calYear}</h3>
@@ -676,11 +683,7 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
             {['S','M','T','W','T','F','S'].map((d,i)=><div key={i} style={{textAlign:'center',fontSize:10,fontWeight:700,color:'var(--text2)',padding:'3px 0'}}>{d}</div>)}
             {Array(firstDay).fill(null).map((_,i)=><div key={`e${i}`}/>)}
             {Array(daysInMonth).fill(null).map((_,i)=>{
-              const day=i+1
-              const isToday=day===now.getDate()&&calMonth===now.getMonth()&&calYear===now.getFullYear()
-              const hasExam=examDates[day]
-              const dateStr=`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`
-              const studied=studyDays.has(dateStr)
+              const day=i+1,isToday=day===now.getDate()&&calMonth===now.getMonth()&&calYear===now.getFullYear(),hasExam=examDates[day],dateStr=`${calYear}-${String(calMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`,studied=studyDays.has(dateStr)
               return(
                 <div key={day} style={{position:'relative',display:'flex',alignItems:'center',justifyContent:'center'}}>
                   <div className="cal-day" style={{background:isToday?'var(--primary)':hasExam?hasExam[0].color:studied?'rgba(67,198,172,0.25)':'transparent',color:isToday||hasExam?'white':'var(--text)',fontWeight:isToday?800:hasExam?700:400,fontSize:11,outline:hasExam&&!isToday?`2px solid ${hasExam[0].color}`:'none',outlineOffset:2,cursor:hasExam?'pointer':'default'}}
@@ -704,8 +707,6 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
             ))}
           </div>
         </Card>
-
-        {/* Next Exam */}
         <Card className="fade2">
           <h3 style={{fontSize:14,fontWeight:700,color:'var(--text)',marginBottom:14}}>⏳ Next Exam</h3>
           {nearestExam?(<div style={{textAlign:'center',padding:'4px 0'}}>
@@ -719,8 +720,6 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
             {nearestDays<=3&&<div style={{marginTop:10,background:'#FFF0F3',color:'#FF6584',borderRadius:8,padding:'6px 12px',fontSize:12,fontWeight:600}}>🔥 Exam very soon!</div>}
           </div>):(<div style={{textAlign:'center',padding:'20px 0',color:'var(--text2)'}}><div style={{fontSize:36,marginBottom:8}}>🎉</div><p style={{fontSize:13}}>No upcoming exams</p></div>)}
         </Card>
-
-        {/* Goals */}
         <Card className="fade3">
           <h3 style={{fontSize:14,fontWeight:700,color:'var(--text)',marginBottom:14}}>🎯 Study Goals</h3>
           {[{label:'Daily Goal',cur:todayMins,goal:dailyGoal,color:'var(--primary)'},{label:'Weekly Goal',cur:weekMins,goal:weeklyGoal,color:'var(--success)'}].map(g=>(
@@ -735,7 +734,6 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
           </div>
         </Card>
       </div>
-
       <div style={{display:'grid',gridTemplateColumns:'1fr 1.4fr',gap:18}}>
         <Card>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:14}}>
@@ -768,9 +766,7 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
           {courses.length===0?(<div style={{textAlign:'center',padding:'28px 0',color:'var(--text2)'}}><div style={{fontSize:36,marginBottom:8}}>📭</div><p style={{fontSize:13}}>No courses yet. <span style={{color:'var(--primary)',cursor:'pointer',fontWeight:600}} onClick={()=>setPage('courses')}>Add one →</span></p></div>):(
             <div style={{display:'flex',flexDirection:'column',gap:10,maxHeight:260,overflowY:'auto'}}>
               {courses.map((c,i)=>{
-                const prog=courseProgress(c)
-                const nearExam=(c.exams||[]).filter(e=>daysUntil(e.date)>=0).sort((a,b)=>new Date(a.date)-new Date(b.date))[0]
-                const days=nearExam?daysUntil(nearExam.date):null
+                const prog=courseProgress(c),nearExam=(c.exams||[]).filter(e=>daysUntil(e.date)>=0).sort((a,b)=>new Date(a.date)-new Date(b.date))[0],days=nearExam?daysUntil(nearExam.date):null
                 return(<div key={c.id} className="hov" onClick={()=>{setSelCourse(c.id);setPage('course')}} style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',background:'var(--bg)',borderRadius:12,cursor:'pointer',border:'1px solid var(--border)'}}>
                   <div style={{width:10,height:10,borderRadius:'50%',background:c.color||COLORS[i%COLORS.length],flexShrink:0}}/>
                   <div style={{flex:1,minWidth:0}}>
@@ -789,7 +785,6 @@ function Dashboard({user,data,saveD,setPage,setSelCourse,setSelSubject}){
   )
 }
 
-/* ════════ COURSES PAGE ════════ */
 function CoursesPage({user,data,saveD,setPage,setSelCourse}){
   const[modal,setModal]=useState(false)
   const[form,setForm]=useState({name:'',color:'#6C63FF'})
@@ -806,9 +801,7 @@ function CoursesPage({user,data,saveD,setPage,setSelCourse}){
       {courses.length===0?<Card style={{textAlign:'center',padding:'56px 32px'}} className="fade2"><div style={{fontSize:56,marginBottom:12}}>📭</div><h3 style={{fontWeight:700,fontSize:18,marginBottom:8,color:'var(--text)'}}>No courses yet</h3><Btn onClick={()=>setModal(true)}>+ Add Course</Btn></Card>:(
         <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:16}}>
           {courses.map((c,i)=>{
-            const prog=courseProgress(c)
-            const nearExam=(c.exams||[]).filter(e=>daysUntil(e.date)>=0).sort((a,b)=>new Date(a.date)-new Date(b.date))[0]
-            const days=nearExam?daysUntil(nearExam.date):null
+            const prog=courseProgress(c),nearExam=(c.exams||[]).filter(e=>daysUntil(e.date)>=0).sort((a,b)=>new Date(a.date)-new Date(b.date))[0],days=nearExam?daysUntil(nearExam.date):null
             return(<div key={c.id} className="hov" onClick={()=>{setSelCourse(c.id);setPage('course')}} style={{background:'var(--card)',borderRadius:16,padding:20,border:'1px solid var(--border)',borderTop:`4px solid ${c.color}`,cursor:'pointer',boxShadow:'var(--shadow)'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
                 <div><h3 style={{fontWeight:700,fontSize:15,color:'var(--text)',marginBottom:2}}>{c.name}</h3><span style={{fontSize:12,color:'var(--text2)'}}>{c.subjects?.length||0} subjects · {(c.exams||[]).length} exams</span></div>
@@ -824,16 +817,12 @@ function CoursesPage({user,data,saveD,setPage,setSelCourse}){
           })}
         </div>
       )}
-
-      {/* Theme Character — always shows below courses */}
       <ThemeCharacter theme={data.theme || 'light'} />
-
       {modal&&<Modal title="Add New Course 📚" onClose={()=>setModal(false)}><SI label="Course Name *" placeholder="e.g. Mathematics, Physics..." value={form.name} onChange={v=>setForm({...form,name:v})}/><div style={{marginTop:14}}><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:10}}>Color</label><div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{PALETTE.map(c=><div key={c} onClick={()=>setForm({...form,color:c})} style={{width:28,height:28,borderRadius:'50%',background:c,cursor:'pointer',border:form.color===c?'3px solid var(--text)':'3px solid transparent',transform:form.color===c?'scale(1.2)':'scale(1)',transition:'all 0.15s'}}/>)}</div></div><div style={{display:'flex',gap:10,justifyContent:'flex-end',marginTop:20}}><GBtn onClick={()=>setModal(false)}>Cancel</GBtn><Btn onClick={addCourse}>Add Course</Btn></div></Modal>}
     </div>
   )
 }
 
-/* ════════ COURSE DETAIL ════════ */
 function CoursePage({user,courseId,data,saveD,setPage,setSelSubject}){
   const[tab,setTab]=useState('subjects')
   const[subModal,setSubModal]=useState(false)
@@ -849,9 +838,7 @@ function CoursePage({user,courseId,data,saveD,setPage,setSelSubject}){
   const addExam=()=>{if(!examForm.name.trim()||!examForm.date)return;upd({...course,exams:[...exams,{id:Date.now(),name:examForm.name.trim(),date:examForm.date,chapters:examForm.chapters}]});setExamForm({name:'',date:'',chapters:{}});setExamModal(false)}
   const delExam=id=>{if(!confirm('Delete exam?'))return;upd({...course,exams:exams.filter(e=>e.id!==id)})}
   const toggleExCh=(sId,chId)=>{const k=`${sId}_${chId}`;setExamForm(f=>({...f,chapters:{...f.chapters,[k]:!f.chapters[k]}}))}
-  const totalCh=subjects.reduce((a,s)=>a+(s.chapters?.length||0),0)
-  const doneCh=subjects.reduce((a,s)=>a+(s.chapters?.filter(c=>c.done).length||0),0)
-  const overall=totalCh?Math.round(doneCh/totalCh*100):0
+  const totalCh=subjects.reduce((a,s)=>a+(s.chapters?.length||0),0),doneCh=subjects.reduce((a,s)=>a+(s.chapters?.filter(c=>c.done).length||0),0),overall=totalCh?Math.round(doneCh/totalCh*100):0
   return(
     <div>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:22}} className="fade">
@@ -900,9 +887,7 @@ function CoursePage({user,courseId,data,saveD,setPage,setSelSubject}){
           {exams.length===0?<Card style={{textAlign:'center',padding:'48px'}}><div style={{fontSize:48,marginBottom:12}}>📝</div><h3 style={{fontWeight:700,color:'var(--text)',marginBottom:6}}>No exams yet</h3><p style={{color:'var(--text2)',marginBottom:16,fontSize:13}}>Add Term 1, UT1, UT2, Finals etc.</p><Btn onClick={()=>setExamModal(true)}>+ Add Exam</Btn></Card>:(
             <div style={{display:'flex',flexDirection:'column',gap:14}}>
               {exams.map(ex=>{
-                const days=daysUntil(ex.date)
-                const chKeys=Object.keys(ex.chapters||{}).filter(k=>ex.chapters[k])
-                let examDone=0,examTotal=0
+                const days=daysUntil(ex.date),chKeys=Object.keys(ex.chapters||{}).filter(k=>ex.chapters[k]);let examDone=0,examTotal=0
                 chKeys.forEach(key=>{const[sId,chId]=key.split('_');const sub=subjects.find(s=>String(s.id)===sId);if(sub){examTotal++;const ch=sub.chapters?.find(c=>String(c.id)===chId);if(ch?.done)examDone++}})
                 const examProg=examTotal?Math.round(examDone/examTotal*100):0
                 return(
@@ -960,7 +945,6 @@ function CoursePage({user,courseId,data,saveD,setPage,setSelSubject}){
   )
 }
 
-/* ════════ PDF VIEWER ════════ */
 function PDFViewer({subjectKey}){
   const[pdfs,setPdfs]=useState([])
   const[activeId,setActiveId]=useState(null)
@@ -968,7 +952,6 @@ function PDFViewer({subjectKey}){
   const[loading,setLoading]=useState(true)
   const fileRef=useRef(null)
   const folderRef=useRef(null)
-
   useEffect(()=>{
     if(!subjectKey){setLoading(false);return}
     const manifestKey=`${subjectKey}_manifest`
@@ -979,13 +962,10 @@ function PDFViewer({subjectKey}){
     })).then(results=>{const valid=results.filter(Boolean);setPdfs(valid);if(valid.length>0)setActiveId(valid[0].id);setLoading(false)})
     return()=>{}
   },[subjectKey])
-
   const addFiles=async(files)=>{
     const pdfFiles=Array.from(files).filter(f=>f.type==='application/pdf')
     if(pdfFiles.length===0){alert('No PDF files found.');return}
-    const manifestKey=`${subjectKey}_manifest`
-    const existing=JSON.parse(localStorage.getItem(manifestKey)||'[]')
-    const newItems=[]
+    const manifestKey=`${subjectKey}_manifest`,existing=JSON.parse(localStorage.getItem(manifestKey)||'[]'),newItems=[]
     for(const file of pdfFiles){
       const id=`${Date.now()}_${Math.random().toString(36).slice(2)}`
       try{await savePDF(`${subjectKey}_${id}`,file);const url=URL.createObjectURL(file);newItems.push({id,name:file.name,url})}catch(e){console.error('Failed to save PDF',e)}
@@ -995,23 +975,18 @@ function PDFViewer({subjectKey}){
     setPdfs(prev=>[...prev,...newItems])
     if(!activeId&&newItems.length>0)setActiveId(newItems[0].id)
   }
-
   const removePdf=async(id)=>{
     const pdf=pdfs.find(p=>p.id===id)
     if(pdf){try{URL.revokeObjectURL(pdf.url)}catch{}}
     try{await deletePDF(`${subjectKey}_${id}`)}catch{}
-    const manifestKey=`${subjectKey}_manifest`
-    const manifest=JSON.parse(localStorage.getItem(manifestKey)||'[]')
+    const manifestKey=`${subjectKey}_manifest`,manifest=JSON.parse(localStorage.getItem(manifestKey)||'[]')
     localStorage.setItem(manifestKey,JSON.stringify(manifest.filter(m=>m.id!==id)))
     const updated=pdfs.filter(p=>p.id!==id)
     setPdfs(updated)
     if(activeId===id)setActiveId(updated.length>0?updated[0].id:null)
   }
-
   const activePdf=pdfs.find(p=>p.id===activeId)
-
   if(loading)return<div style={{textAlign:'center',padding:'20px 0',color:'var(--text2)',fontSize:13}}>⏳ Loading PDFs...</div>
-
   return(
     <div>
       <div style={{display:'flex',gap:8,marginBottom:8}}>
@@ -1020,7 +995,6 @@ function PDFViewer({subjectKey}){
       </div>
       <input ref={fileRef} type="file" accept="application/pdf" multiple onChange={e=>addFiles(e.target.files)} style={{display:'none'}}/>
       <input ref={folderRef} type="file" webkitdirectory="" onChange={e=>addFiles(e.target.files)} style={{display:'none'}}/>
-
       {pdfs.length===0?(
         <div onClick={()=>fileRef.current?.click()} style={{border:'2px dashed var(--border)',borderRadius:12,padding:'20px 12px',textAlign:'center',cursor:'pointer',background:'var(--bg)',transition:'all 0.2s'}} onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--primary)';e.currentTarget.style.background='rgba(108,99,255,0.04)'}} onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--border)';e.currentTarget.style.background='var(--bg)'}}>
           <div style={{fontSize:24,marginBottom:6}}>📂</div>
@@ -1050,7 +1024,6 @@ function PDFViewer({subjectKey}){
         </>
       )}
       <p style={{fontSize:9,color:'var(--text2)',marginTop:6,textAlign:'center'}}>📌 Saved locally — nothing uploaded</p>
-
       {fullscreen&&activePdf&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.95)',zIndex:2000,display:'flex',flexDirection:'column'}}>
           <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 16px',background:'rgba(0,0,0,0.7)',backdropFilter:'blur(10px)',flexShrink:0,overflowX:'auto'}}>
@@ -1066,7 +1039,6 @@ function PDFViewer({subjectKey}){
   )
 }
 
-/* ════════ SUBJECT PAGE ════════ */
 function SubjectPage({user,subjectId,courseId,data,saveD,setPage}){
   const[modal,setModal]=useState(false)
   const[chName,setChName]=useState('')
@@ -1079,11 +1051,8 @@ function SubjectPage({user,subjectId,courseId,data,saveD,setPage}){
   const updCh=(id,field,val)=>persist({...subject,chapters:chapters.map(c=>c.id===id?{...c,[field]:val}:c)})
   const addCh=()=>{if(!chName.trim())return;persist({...subject,chapters:[...chapters,{id:Date.now(),name:chName.trim(),done:false,revise:false,mock:false,confidence:0}]});setChName('');setModal(false)}
   const delCh=id=>{if(confirm('Delete?'))persist({...subject,chapters:chapters.filter(c=>c.id!==id)})}
-  const done=chapters.filter(c=>c.done).length
-  const revised=chapters.filter(c=>c.revise).length
-  const mocked=chapters.filter(c=>c.mock).length
+  const done=chapters.filter(c=>c.done).length,revised=chapters.filter(c=>c.revise).length,mocked=chapters.filter(c=>c.mock).length
   const avgConf=chapters.length?(chapters.reduce((a,c)=>a+(c.confidence||0),0)/chapters.length).toFixed(1):0
-
   return(
     <div>
       <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:22}} className="fade">
@@ -1161,7 +1130,6 @@ function SubjectPage({user,subjectId,courseId,data,saveD,setPage}){
   )
 }
 
-/* ════════ PROGRESS ════════ */
 function ProgressPage({user,data,setPage,setSelCourse}){
   const courses=data.courses||[]
   const stats=courses.map((c,i)=>{let t=0,d=0,r=0,m=0,tc=0,cc=0;(c.subjects||[]).forEach(s=>(s.chapters||[]).forEach(ch=>{t++;if(ch.done)d++;if(ch.revise)r++;if(ch.mock)m++;if(ch.confidence){tc+=ch.confidence;cc++}}));const ne=(c.exams||[]).filter(e=>daysUntil(e.date)>=0).sort((a,b)=>new Date(a.date)-new Date(b.date))[0];return{...c,total:t,done:d,revised:r,mocked:m,prog:t?Math.round(d/t*100):0,avgConf:cc?(tc/cc).toFixed(1):0,daysLeft:ne?daysUntil(ne.date):null,color:c.color||COLORS[i%COLORS.length]}})
@@ -1212,10 +1180,8 @@ function ProgressPage({user,data,setPage,setSelCourse}){
   )
 }
 
-/* ════════ POMODORO ════════ */
-// Timer state (running, timeLeft, mode, cycles) is lifted to App so it
-// survives navigation. PomodoroPage receives them as props.
-function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,mode,setMode,cycles,setCycles}){
+// isFullscreen and setIsFullscreen are now props — lifted to App so Layout can react
+function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,mode,setMode,cycles,setCycles,isFullscreen,setIsFullscreen}){
   const[session,setSession]=useState(data.pomoSession||25)
   const[breakT,setBreakT]=useState(data.pomoBreak||5)
   const[longBreak,setLongBreak]=useState(data.pomoLong||15)
@@ -1226,15 +1192,12 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const[showSpotify,setShowSpotify]=useState(false)
   const[showSettings,setShowSettings]=useState(false)
   const[settingsTab,setSettingsTab]=useState('timer')
-  const[isFullscreen,setIsFullscreen]=useState(false)
   const[timerFont,setTimerFont]=useState(data.timerFont||'Sora')
   const[alertSound,setAlertSound]=useState(data.alertSound||'bell')
   const intervalRef=useRef(null)
   const endTimeRef=useRef(null)
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
-
   useEffect(()=>{if(!running)setTimeLeft(durations[mode])},[mode,session,breakT,longBreak])
-
   const playSound=useCallback((type)=>{
     try{
       const ctx=new(window.AudioContext||window.webkitAudioContext)()
@@ -1247,51 +1210,26 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       };(sounds[type]||sounds.bell)()
     }catch(e){}
   },[])
-
   const handleDone=useCallback(()=>{
-    clearInterval(intervalRef.current)
-    setRunning(false)
-    endTimeRef.current=null
-    playSound(alertSound)
-    if(mode==='pomodoro'){
-      setCycles(c=>c+1)
-      saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})
-    }
+    clearInterval(intervalRef.current);setRunning(false);endTimeRef.current=null;playSound(alertSound)
+    if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})}
     setTimeLeft(durations[mode])
   },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
-
   const tick=useCallback(()=>{
     if(!endTimeRef.current)return
     const remaining=Math.round((endTimeRef.current-Date.now())/1000)
-    if(remaining<=0){handleDone()}
-    else{setTimeLeft(remaining)}
+    if(remaining<=0){handleDone()}else{setTimeLeft(remaining)}
   },[handleDone,setTimeLeft])
-
-  // Start/stop interval based on running prop
   useEffect(()=>{
-    if(running){
-      endTimeRef.current=Date.now()+timeLeft*1000
-      intervalRef.current=setInterval(tick,500)
-    }else{
-      clearInterval(intervalRef.current)
-      // Don't null endTimeRef here — pause preserves the remaining time
-    }
+    if(running){endTimeRef.current=Date.now()+timeLeft*1000;intervalRef.current=setInterval(tick,500)}
+    else{clearInterval(intervalRef.current)}
     return()=>clearInterval(intervalRef.current)
   },[running])
-
-  // Re-sync display when tab becomes visible again
   useEffect(()=>{
-    const onVisible=()=>{
-      if(!document.hidden&&running&&endTimeRef.current){
-        const remaining=Math.round((endTimeRef.current-Date.now())/1000)
-        if(remaining<=0){handleDone()}
-        else{setTimeLeft(remaining)}
-      }
-    }
+    const onVisible=()=>{if(!document.hidden&&running&&endTimeRef.current){const remaining=Math.round((endTimeRef.current-Date.now())/1000);if(remaining<=0){handleDone()}else{setTimeLeft(remaining)}}}
     document.addEventListener('visibilitychange',onVisible)
     return()=>document.removeEventListener('visibilitychange',onVisible)
   },[running,handleDone,setTimeLeft])
-
   const reset=()=>{setRunning(false);endTimeRef.current=null;setTimeLeft(durations[mode])}
   const skip=()=>{setRunning(false);endTimeRef.current=null;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
   const getEmbedUrl=url=>{if(!url)return null;const m1=url.match(/playlist\/([a-zA-Z0-9]+)/);if(m1)return`https://open.spotify.com/embed/playlist/${m1[1]}?utm_source=generator&theme=0`;const m2=url.match(/album\/([a-zA-Z0-9]+)/);if(m2)return`https://open.spotify.com/embed/album/${m2[1]}?utm_source=generator&theme=0`;const m3=url.match(/track\/([a-zA-Z0-9]+)/);if(m3)return`https://open.spotify.com/embed/track/${m3[1]}?utm_source=generator&theme=0`;return null}
@@ -1300,7 +1238,8 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const FONTS=[{id:'Sora',label:'Sora',sample:'25:00'},{id:'Georgia',label:'Serif Classic',sample:'25:00'},{id:'Courier New',label:'Monospace',sample:'25:00'},{id:'system-ui',label:'System',sample:'25:00'},{id:'cursive',label:'Cursive',sample:'25:00'}]
   const SOUNDS=[{id:'bell',label:'🔔 Bell',desc:'Soft triangle bell'},{id:'chime',label:'🎐 Wind Chime',desc:'4-note chime'},{id:'soft',label:'✨ Soft Ding',desc:'Gentle tone'},{id:'pop',label:'💬 Pop',desc:'Quick pop'},{id:'none',label:'🔇 Silent',desc:'No sound'}]
   return(
-    <div style={{position:'fixed',top:0,left:isFullscreen?0:252,right:0,bottom:0,zIndex:isFullscreen?9999:50,...getBgStyle(),display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden',transition:'left 0.3s'}}>
+    // Pomodoro always fills its container; left offset is now handled by Layout
+    <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:isFullscreen?9999:50,...getBgStyle(),display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
       <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.52)',zIndex:0}}/>
       {!isFullscreen&&(
         <div style={{position:'absolute',top:24,right:24,display:'flex',gap:12,zIndex:2}}>
@@ -1318,15 +1257,14 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         {Array(Math.min(cycles,8)).fill(null).map((_,i)=><div key={i} style={{width:10,height:10,borderRadius:'50%',background:'rgba(255,255,255,0.75)'}}/>)}
         {cycles>0&&<span style={{color:'rgba(255,255,255,0.6)',fontSize:13,marginLeft:4}}>{cycles} sessions</span>}
       </div>
+      {/* Focus Mode button — toggles sidebar visibility via lifted state */}
       <button onClick={()=>setIsFullscreen(f=>!f)} style={{position:'absolute',bottom:24,right:24,zIndex:2,background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.25)',borderRadius:50,padding:'10px 18px',color:'white',cursor:'pointer',fontSize:13,fontWeight:600,backdropFilter:'blur(12px)',display:'flex',alignItems:'center',gap:8}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.25)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>
         {isFullscreen?<><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>Exit Focus</>:<><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>Focus Mode</>}
       </button>
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:8,marginBottom:44}}>
           {[['pomodoro','pomodoro'],['short','short break'],['long','long break']].map(([key,label])=>(
-            <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>
-              {label}
-            </button>
+            <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>{label}</button>
           ))}
         </div>
         <div style={{marginBottom:44,textAlign:'center'}}>
@@ -1340,7 +1278,6 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         </div>
         <button onClick={()=>playSound(alertSound)} style={{marginTop:18,background:'transparent',border:'none',color:'rgba(255,255,255,0.4)',fontSize:13,cursor:'pointer',fontWeight:500}} onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.8)'} onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.4)'}>🔔 test alert sound</button>
       </div>
-
       {showSpotify&&(
         <div style={{position:'absolute',bottom:24,left:24,zIndex:2,width:330}} className="pop">
           {embedUrl?(<div><iframe src={embedUrl} width="330" height="152" frameBorder="0" allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture" loading="lazy" style={{borderRadius:16,display:'block',boxShadow:'0 8px 32px rgba(0,0,0,0.4)'}}/><button onClick={()=>{setSpotifyUrl('');setSpotifyInput('');saveD({...data,spotifyUrl:''})}} style={{marginTop:8,background:'rgba(0,0,0,0.5)',border:'1px solid rgba(255,255,255,0.2)',borderRadius:50,padding:'6px 16px',color:'rgba(255,255,255,0.7)',fontSize:12,cursor:'pointer'}}>× Change playlist</button></div>):(
@@ -1353,7 +1290,6 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           )}
         </div>
       )}
-
       {showSettings&&(
         <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.7)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(6px)'}} onClick={()=>setShowSettings(false)}>
           <div className="pop" style={{background:'var(--card)',borderRadius:22,padding:0,width:520,maxWidth:'95vw',maxHeight:'88vh',overflow:'hidden',boxShadow:'0 32px 80px rgba(0,0,0,0.4)'}} onClick={e=>e.stopPropagation()}>
@@ -1434,16 +1370,14 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   )
 }
 
-/* ════════ REUSABLES ════════ */
 function Card({children,style,className}){return <div className={className} style={{background:'var(--card)',borderRadius:16,padding:20,border:'1px solid var(--border)',boxShadow:'var(--shadow)',...style}}>{children}</div>}
 function Btn({children,onClick,style}){return <button onClick={onClick} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'10px 20px',background:'var(--primary)',color:'white',border:'none',borderRadius:50,fontFamily:'Sora',fontWeight:600,fontSize:13,cursor:'pointer',boxShadow:'0 4px 14px rgba(108,99,255,0.25)',transition:'opacity 0.2s',...style}} onMouseEnter={e=>e.currentTarget.style.opacity='0.87'} onMouseLeave={e=>e.currentTarget.style.opacity='1'}>{children}</button>}
 function GBtn({children,onClick}){return <button onClick={onClick} style={{display:'inline-flex',alignItems:'center',gap:6,padding:'10px 20px',background:'transparent',color:'var(--primary)',border:'2px solid var(--border)',borderRadius:50,fontFamily:'Sora',fontWeight:600,fontSize:13,cursor:'pointer',transition:'border 0.2s'}} onMouseEnter={e=>e.currentTarget.style.borderColor='var(--primary)'} onMouseLeave={e=>e.currentTarget.style.borderColor='var(--border)'}>{children}</button>}
 function SI({label,type='text',placeholder,value,onChange,onEnter}){return <div><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:5}}>{label}</label><input type={type} placeholder={placeholder} value={value} onChange={e=>onChange(e.target.value)} onKeyDown={e=>e.key==='Enter'&&onEnter?.()} style={{width:'100%',padding:'11px 13px',border:'2px solid var(--border)',borderRadius:10,background:'var(--input)',color:'var(--text)',fontSize:14,outline:'none',transition:'border 0.2s'}} onFocus={e=>e.target.style.borderColor='var(--primary)'} onBlur={e=>e.target.style.borderColor='var(--border)'}/></div>}
 function Modal({title,children,onClose,wide}){return <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,backdropFilter:'blur(4px)'}} onClick={onClose}><div className="pop" style={{background:'var(--card)',borderRadius:20,padding:28,width:wide?560:440,maxWidth:'95vw',maxHeight:'90vh',overflowY:'auto',boxShadow:'0 24px 60px rgba(0,0,0,0.2)'}} onClick={e=>e.stopPropagation()}><h3 style={{fontSize:18,fontWeight:800,marginBottom:16,color:'var(--text)'}}>{title}</h3>{children}</div></div>}
 
-/* ════════ ROOT ════════ */
 export default function App(){
-  const[user,setUser]=useState(null)         // { id, email, name }
+  const[user,setUser]=useState(null)
   const[data,setData]=useState(defaultData())
   const[page,setPage]=useState('dashboard')
   const[selCourse,setSelCourse]=useState(null)
@@ -1451,16 +1385,16 @@ export default function App(){
   const[theme,setTheme]=useState('light')
   const[ready,setReady]=useState(false)
 
-  // Lifted Pomodoro state
+  // Lifted Pomodoro state — pomoFullscreen lives here so Layout can hide sidebar
   const[pomoRunning,setPomoRunning]=useState(false)
   const[pomoTimeLeft,setPomoTimeLeft]=useState(25*60)
   const[pomoMode,setPomoMode]=useState('pomodoro')
   const[pomoCycles,setPomoCycles]=useState(0)
+  const[pomoFullscreen,setPomoFullscreen]=useState(false)
 
   useEffect(()=>{ applyTheme(theme) },[theme])
   useEffect(()=>{ setReady(true) },[])
 
-  // Called by AuthPage when login/session-restore succeeds
   const handleLogin = (u, d) => {
     setUser(u)
     const finalD = d || defaultData()
@@ -1471,7 +1405,6 @@ export default function App(){
     setReady(true)
   }
 
-  // Save: local cache first (instant), then debounced cloud sync
   const saveD = updated => {
     setData(updated)
     if(user?.id){
@@ -1480,7 +1413,6 @@ export default function App(){
     }
   }
 
-  // Sign out via SDK
   const signOut = async () => {
     try { await supa.signOut() } catch(e){}
     setUser(null)
@@ -1505,6 +1437,7 @@ export default function App(){
     timeLeft:pomoTimeLeft, setTimeLeft:setPomoTimeLeft,
     mode:pomoMode, setMode:setPomoMode,
     cycles:pomoCycles, setCycles:setPomoCycles,
+    isFullscreen:pomoFullscreen, setIsFullscreen:setPomoFullscreen,
   }
 
   const renderPage=()=>{
@@ -1518,13 +1451,12 @@ export default function App(){
   const modeLabel = pomoMode==='pomodoro'?'Focus':pomoMode==='short'?'Short Break':'Long Break'
 
   return(
-    <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD} onSignOut={signOut}>
-      {/* PomodoroPage always mounted so timer never resets on navigation */}
+    // isFullscreen passed to Layout so it hides the sidebar during Focus Mode
+    <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD} onSignOut={signOut} isFullscreen={pomoFullscreen}>
       <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,opacity:page==='pomodoro'?1:0,pointerEvents:page==='pomodoro'?'auto':'none',zIndex:page==='pomodoro'?50:-1,transition:'opacity 0.2s'}}>
         <PomodoroPage {...pomoProps}/>
       </div>
 
-      {/* Floating pill when timer is running on other pages */}
       {page!=='pomodoro'&&pomoRunning&&(
         <div onClick={()=>setPage('pomodoro')} style={{position:'fixed',bottom:28,right:28,zIndex:9999,background:'linear-gradient(135deg,#6C63FF,#43C6AC)',borderRadius:50,padding:'12px 22px',display:'flex',alignItems:'center',gap:12,boxShadow:'0 8px 32px rgba(108,99,255,0.5)',cursor:'pointer',userSelect:'none'}}>
           <span style={{fontSize:20}}>🍅</span>
