@@ -9,6 +9,7 @@ h1,h2,h3,h4{font-family:'Sora',sans-serif;}
 input,textarea,button,select{font-family:'DM Sans',sans-serif;}
 ::-webkit-scrollbar{width:5px;}
 ::-webkit-scrollbar-thumb{background:#c4c0ff;border-radius:8px;}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
 @keyframes popIn{from{opacity:0;transform:scale(0.88)}to{opacity:1;transform:scale(1)}}
 .fade{animation:fadeUp 0.4s cubic-bezier(.22,1,.36,1) both;}
@@ -1238,8 +1239,157 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       document.removeEventListener('keydown',unlock)
     }
   },[])
+
+  // ── Focus Guard ───────────────────────────────────────────────
+  const[focusGuard,setFocusGuard]=useState(false)
+  const[fgStatus,setFgStatus]=useState('off')   // off|loading|ready|face|absent|sleeping|phone|error
+  const[fgMsg,setFgMsg]=useState('')
+  const videoRef=useRef(null)
+  const canvasRef=useRef(null)
+  const streamRef=useRef(null)
+  const faceApiReadyRef=useRef(false)
+  const cocoReadyRef=useRef(false)
+  const detectionLoopRef=useRef(null)
+  const absentSinceRef=useRef(null)
+  const manuallyPausedRef=useRef(false)
+  const guardPausedRef=useRef(false)
+  const lastDistractionAlertRef=useRef(0)
+
+  const loadScript=url=>new Promise((res,rej)=>{
+    if(document.querySelector(`script[src="${url}"]`)){setTimeout(res,400);return}
+    const s=document.createElement('script');s.src=url;s.onload=res;s.onerror=rej;document.head.appendChild(s)
+  })
+
+  const playSoftPing=useCallback(()=>{
+    try{
+      const ctx=getAudioCtx()
+      const o=ctx.createOscillator(),g=ctx.createGain()
+      o.connect(g);g.connect(ctx.destination)
+      o.type='sine';o.frequency.value=880
+      g.gain.setValueAtTime(0,ctx.currentTime)
+      g.gain.linearRampToValueAtTime(0.12,ctx.currentTime+0.04)
+      g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.7)
+      o.start();o.stop(ctx.currentTime+0.7)
+    }catch(e){}
+  },[getAudioCtx])
+
+  const stopFocusGuard=useCallback(()=>{
+    clearInterval(detectionLoopRef.current)
+    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
+    absentSinceRef.current=null
+    guardPausedRef.current=false
+    setFgStatus('off');setFgMsg('')
+  },[])
+
+  const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)
+
+  const runDetection=useCallback(async()=>{
+    if(!videoRef.current||!canvasRef.current||!faceApiReadyRef.current)return
+    const video=videoRef.current
+    if(video.readyState<2)return
+    const canvas=canvasRef.current
+    canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240
+    canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height)
+    try{
+      const dets=await window.faceapi
+        .detectAllFaces(canvas,new window.faceapi.TinyFaceDetectorOptions({scoreThreshold:0.38}))
+        .withFaceLandmarks(true)
+      const faceFound=dets.length>0
+      let phoneFound=false
+      if(cocoReadyRef.current&&window._cocoModel){
+        const preds=await window._cocoModel.detect(canvas)
+        phoneFound=preds.some(p=>p.class==='cell phone'&&p.score>0.48)
+      }
+      let sleeping=false
+      if(faceFound&&dets[0].landmarks){
+        const lm=dets[0].landmarks.positions
+        const ear=pts=>{const a=dist(pts[1],pts[5]),b=dist(pts[2],pts[4]),c=dist(pts[0],pts[3]);return(a+b)/(2.0*c)}
+        const avgEAR=(ear(lm.slice(36,42))+ear(lm.slice(42,48)))/2
+        sleeping=avgEAR<0.18
+      }
+      const now=Date.now()
+      if(!faceFound){
+        if(!absentSinceRef.current)absentSinceRef.current=now
+        const secs=(now-absentSinceRef.current)/1000
+        setFgStatus('absent');setFgMsg(`Away ${Math.round(secs)}s…`)
+        if(secs>=5&&!manuallyPausedRef.current&&!guardPausedRef.current){
+          guardPausedRef.current=true
+          setRunning(false)
+          playSound(alertSound)
+          setFgMsg('Timer paused — come back! 👀')
+        }
+      } else {
+        if(absentSinceRef.current){
+          absentSinceRef.current=null
+          if(guardPausedRef.current&&!manuallyPausedRef.current){
+            guardPausedRef.current=false
+            setRunning(true)
+            setFgMsg('Welcome back! Resuming ▶')
+            setTimeout(()=>setFgMsg('Focused ✓'),2200)
+          }
+        }
+        if(sleeping){
+          setFgStatus('sleeping');setFgMsg('😴 Hey, wake up!')
+          if(now-lastDistractionAlertRef.current>8000){lastDistractionAlertRef.current=now;playSoftPing()}
+        } else if(phoneFound){
+          setFgStatus('phone');setFgMsg('📱 Put the phone down!')
+          if(now-lastDistractionAlertRef.current>8000){lastDistractionAlertRef.current=now;playSoftPing()}
+        } else {
+          setFgStatus('face');setFgMsg('Focused ✓')
+        }
+      }
+    }catch(e){}
+  },[alertSound,playSound,playSoftPing,setRunning,dist])
+
+  useEffect(()=>{
+    if(!focusGuard){stopFocusGuard();return}
+    let cancelled=false
+    const start=async()=>{
+      setFgStatus('loading');setFgMsg('Loading AI models…')
+      try{
+        if(!window.faceapi)await loadScript('https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js')
+        if(!window.tf)await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
+        if(!window.cocoSsd)await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
+        if(!faceApiReadyRef.current){
+          setFgMsg('Loading face model…')
+          const M='https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights'
+          await Promise.all([window.faceapi.nets.tinyFaceDetector.loadFromUri(M),window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(M)])
+          faceApiReadyRef.current=true
+        }
+        if(!cocoReadyRef.current){
+          setFgMsg('Loading object model…')
+          window._cocoModel=await window.cocoSsd.load()
+          cocoReadyRef.current=true
+        }
+        if(cancelled)return
+        setFgMsg('Starting camera…')
+        const stream=await navigator.mediaDevices.getUserMedia({video:{width:320,height:240,facingMode:'user'}})
+        if(cancelled){stream.getTracks().forEach(t=>t.stop());return}
+        streamRef.current=stream
+        if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}
+        setFgStatus('ready');setFgMsg('Active — watching 👁')
+        detectionLoopRef.current=setInterval(runDetection,1600)
+      }catch(e){
+        if(!cancelled){setFgStatus('error');setFgMsg(e?.message?.includes('ermission')?'Camera permission denied':e?.message||'Failed to start')}
+      }
+    }
+    start()
+    return()=>{cancelled=true;stopFocusGuard()}
+  },[focusGuard])
+
+  const handleStartStop=()=>{
+    getAudioCtx()
+    if(running){manuallyPausedRef.current=true;guardPausedRef.current=false;setRunning(false)}
+    else{manuallyPausedRef.current=false;setRunning(true)}
+  }
+
+  const FG_STATUS_COLOR={off:'#888',loading:'#FFB347',ready:'#43C6AC',face:'#43C6AC',absent:'#FF6584',sleeping:'#FFB347',phone:'#FFB347',error:'#FF6584'}
+  const FG_STATUS_ICON={off:'⚫',loading:'⏳',ready:'👁',face:'🟢',absent:'🔴',sleeping:'😴',phone:'📱',error:'❌'}
+
+
   const handleDone=useCallback(()=>{
     clearInterval(intervalRef.current);setRunning(false);endTimeRef.current=null;playSound(alertSound)
+    manuallyPausedRef.current=false;guardPausedRef.current=false
     if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})}
     setTimeLeft(durations[mode])
   },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
@@ -1269,6 +1419,9 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     // left offset matches sidebar (252px) when not fullscreen so dashboard doesn't show through
     <div style={{position:'fixed',top:0,left:isFullscreen?0:252,right:0,bottom:0,zIndex:isFullscreen?9999:50,...getBgStyle(),display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden',transition:'left 0.3s'}}>
       <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.52)',zIndex:0}}/>
+      {/* Hidden elements for Focus Guard ML — always mounted when feature is on */}
+      <video ref={videoRef} style={{display:'none'}} muted playsInline/>
+      <canvas ref={canvasRef} style={{display:'none'}}/>
       {!isFullscreen&&(
         <div style={{position:'absolute',top:24,right:24,display:'flex',gap:12,zIndex:2}}>
           <button onClick={()=>setShowSpotify(s=>!s)} style={{background:showSpotify?'rgba(30,215,96,0.25)':'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.25)',borderRadius:50,padding:'12px 22px',color:'white',cursor:'pointer',fontSize:15,fontWeight:700,backdropFilter:'blur(12px)',display:'flex',alignItems:'center',gap:8}}>
@@ -1289,6 +1442,13 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       <button onClick={()=>setIsFullscreen(f=>!f)} style={{position:'absolute',bottom:24,right:24,zIndex:2,background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.25)',borderRadius:50,padding:'10px 18px',color:'white',cursor:'pointer',fontSize:13,fontWeight:600,backdropFilter:'blur(12px)',display:'flex',alignItems:'center',gap:8}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.25)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>
         {isFullscreen?<><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/></svg>Exit Focus</>:<><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>Focus Mode</>}
       </button>
+      {/* Focus Guard status badge — bottom left */}
+      {focusGuard&&fgStatus!=='off'&&(
+        <div onClick={()=>{setShowSettings(true);setSettingsTab('guard')}} style={{position:'absolute',bottom:24,left:24,zIndex:2,display:'flex',alignItems:'center',gap:7,padding:'8px 14px',background:'rgba(0,0,0,0.45)',backdropFilter:'blur(12px)',borderRadius:50,border:`1.5px solid ${FG_STATUS_COLOR[fgStatus]||'#888'}55`,cursor:'pointer',transition:'all 0.2s'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(0,0,0,0.65)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(0,0,0,0.45)'}>
+          <div style={{width:8,height:8,borderRadius:'50%',background:FG_STATUS_COLOR[fgStatus]||'#888',boxShadow:`0 0 8px ${FG_STATUS_COLOR[fgStatus]||'#888'}`}}/>
+          <span style={{fontSize:12,fontWeight:600,color:'rgba(255,255,255,0.85)'}}>{fgMsg||'Focus Guard'}</span>
+        </div>
+      )}
       <div style={{position:'relative',zIndex:1,display:'flex',flexDirection:'column',alignItems:'center'}}>
         <div style={{display:'flex',gap:8,marginBottom:44}}>
           {[['pomodoro','pomodoro'],['short','short break'],['long','long break']].map(([key,label])=>(
@@ -1301,7 +1461,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         </div>
         <div style={{display:'flex',alignItems:'center',gap:16}}>
           <button onClick={reset} style={{width:54,height:54,borderRadius:'50%',background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.3)',color:'white',fontSize:22,cursor:'pointer',backdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.28)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>↺</button>
-          <button onClick={()=>{getAudioCtx();setRunning(r=>!r)}} style={{padding:'18px 56px',borderRadius:50,background:'white',border:'none',fontSize:20,fontWeight:800,cursor:'pointer',fontFamily:'Sora,sans-serif',color:'#1a1a2e',boxShadow:'0 8px 32px rgba(0,0,0,0.3)',transition:'all 0.15s',letterSpacing:1}} onMouseEnter={e=>e.currentTarget.style.transform='scale(1.05)'} onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>{running?'pause':'start'}</button>
+          <button onClick={handleStartStop} style={{padding:'18px 56px',borderRadius:50,background:'white',border:'none',fontSize:20,fontWeight:800,cursor:'pointer',fontFamily:'Sora,sans-serif',color:'#1a1a2e',boxShadow:'0 8px 32px rgba(0,0,0,0.3)',transition:'all 0.15s',letterSpacing:1}} onMouseEnter={e=>e.currentTarget.style.transform='scale(1.05)'} onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>{running?'pause':'start'}</button>
           <button onClick={skip} style={{width:54,height:54,borderRadius:'50%',background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.3)',color:'white',fontSize:22,cursor:'pointer',backdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.28)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>⏭</button>
         </div>
         <button onClick={()=>playSound(alertSound)} style={{marginTop:18,background:'transparent',border:'none',color:'rgba(255,255,255,0.4)',fontSize:13,cursor:'pointer',fontWeight:500}} onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.8)'} onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.4)'}>🔔 test alert sound</button>
@@ -1324,7 +1484,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
             <div style={{padding:'22px 28px 0',borderBottom:'1px solid var(--border)'}}>
               <h3 style={{fontSize:18,fontWeight:800,color:'var(--text)',marginBottom:16}}>⚙️ Timer Settings</h3>
               <div style={{display:'flex',gap:4}}>
-                {[['timer','⏱ Timer'],['bg','🖼 Background'],['sounds','🔔 Sounds'],['fonts','✍️ Fonts']].map(([id,label])=>(
+                {[['timer','⏱ Timer'],['bg','🖼 Background'],['sounds','🔔 Sounds'],['fonts','✍️ Fonts'],['guard','👁 Focus Guard']].map(([id,label])=>(
                   <button key={id} onClick={()=>setSettingsTab(id)} style={{padding:'8px 16px',borderRadius:'10px 10px 0 0',border:'none',cursor:'pointer',fontSize:13,fontWeight:600,fontFamily:'Sora,sans-serif',background:settingsTab===id?'var(--primary)':'transparent',color:settingsTab===id?'white':'var(--text2)',transition:'all 0.15s'}}>{label}</button>
                 ))}
               </div>
@@ -1376,6 +1536,78 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
                   </div>
                 </div>
               )}
+
+              {settingsTab==='guard'&&(
+                <div>
+                  {/* Header */}
+                  <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+                    <div>
+                      <div style={{fontSize:15,fontWeight:700,color:'var(--text)',marginBottom:3}}>👁 Focus Guard</div>
+                      <div style={{fontSize:12,color:'var(--text2)'}}>Camera monitors you — everything stays on your device, nothing is uploaded.</div>
+                    </div>
+                    {/* Toggle */}
+                    <div onClick={()=>setFocusGuard(v=>!v)} style={{width:48,height:26,borderRadius:50,background:focusGuard?'var(--primary)':'#ccc',cursor:'pointer',position:'relative',transition:'background 0.25s',flexShrink:0,marginLeft:16}}>
+                      <div style={{width:20,height:20,borderRadius:'50%',background:'white',position:'absolute',top:3,left:focusGuard?25:3,transition:'left 0.2s',boxShadow:'0 1px 4px rgba(0,0,0,0.25)'}}/>
+                    </div>
+                  </div>
+
+                  {focusGuard&&(
+                    <div>
+                      {/* Status pill */}
+                      <div style={{display:'flex',alignItems:'center',gap:8,padding:'10px 14px',borderRadius:12,background:fgStatus==='face'?'rgba(67,198,172,0.12)':fgStatus==='absent'||fgStatus==='error'?'rgba(255,101,132,0.12)':'rgba(255,179,71,0.12)',marginBottom:14,border:`1px solid ${(FG_STATUS_COLOR[fgStatus]||'#888')}33`}}>
+                        <span style={{fontSize:16}}>{FG_STATUS_ICON[fgStatus]||'⚫'}</span>
+                        <span style={{fontSize:13,fontWeight:600,color:FG_STATUS_COLOR[fgStatus]||'var(--text2)'}}>{fgMsg||'Initialising…'}</span>
+                        {fgStatus==='loading'&&<div style={{marginLeft:'auto',width:14,height:14,border:'2px solid var(--border)',borderTop:'2px solid var(--primary)',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>}
+                      </div>
+
+                      {/* Live camera preview — small, shows model working */}
+                      {streamRef.current&&videoRef.current&&(
+                        <div style={{marginBottom:14,borderRadius:12,overflow:'hidden',border:'2px solid var(--border)',position:'relative',maxWidth:220}}>
+                          <video
+                            ref={el=>{if(el&&streamRef.current&&!el.srcObject){el.srcObject=streamRef.current;el.play()}}}
+                            style={{width:'100%',display:'block',transform:'scaleX(-1)'}}
+                            muted playsInline autoPlay
+                          />
+                          <div style={{position:'absolute',top:6,right:6,background:FG_STATUS_COLOR[fgStatus]||'#888',width:10,height:10,borderRadius:'50%',boxShadow:'0 0 6px currentColor'}}/>
+                          <div style={{position:'absolute',bottom:0,left:0,right:0,background:'rgba(0,0,0,0.55)',padding:'4px 8px',fontSize:10,color:'white',fontWeight:600}}>
+                            {fgMsg}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* What it detects */}
+                      <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                        {[
+                          {icon:'🔴',label:'Left frame > 5s',action:'Pause timer + alert'},
+                          {icon:'😴',label:'Eyes closed (sleeping)',action:'Soft ping alert'},
+                          {icon:'📱',label:'Phone in hand',action:'Soft ping alert'},
+                          {icon:'🟢',label:'Face present & focused',action:'Timer runs normally'},
+                        ].map(r=>(
+                          <div key={r.label} style={{display:'flex',alignItems:'center',gap:10,padding:'9px 12px',background:'var(--bg)',borderRadius:10,border:'1px solid var(--border)'}}>
+                            <span style={{fontSize:16,flexShrink:0}}>{r.icon}</span>
+                            <div style={{flex:1}}>
+                              <div style={{fontSize:12,fontWeight:600,color:'var(--text)'}}>{r.label}</div>
+                              <div style={{fontSize:11,color:'var(--text2)'}}>{r.action}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{marginTop:12,padding:'10px 12px',background:'rgba(108,99,255,0.07)',borderRadius:10,fontSize:11,color:'var(--text2)',lineHeight:1.7}}>
+                        🔒 <strong>Privacy:</strong> Video is processed locally in your browser using TensorFlow.js. No images or data ever leave your device.
+                      </div>
+                    </div>
+                  )}
+
+                  {!focusGuard&&(
+                    <div style={{textAlign:'center',padding:'28px 0',color:'var(--text2)'}}>
+                      <div style={{fontSize:40,marginBottom:8}}>📷</div>
+                      <p style={{fontSize:13}}>Toggle on to activate Focus Guard</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {settingsTab==='fonts'&&(
                 <div>
                   <p style={{fontSize:13,color:'var(--text2)',marginBottom:16}}>Choose font for the timer display.</p>
