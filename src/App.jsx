@@ -1256,8 +1256,20 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const lastDistractionAlertRef=useRef(0)
 
   const loadScript=url=>new Promise((res,rej)=>{
-    if(document.querySelector(`script[src="${url}"]`)){setTimeout(res,400);return}
-    const s=document.createElement('script');s.src=url;s.onload=res;s.onerror=rej;document.head.appendChild(s)
+    if(document.querySelector(`script[src="${url}"]`)){
+      // already injected — poll until the global it provides is available
+      const t0=Date.now()
+      const poll=()=>{setTimeout(()=>{
+        // resolve after short delay so globals are set
+        if(Date.now()-t0>8000)rej(new Error('Script timeout: '+url))
+        else res()
+      },600)}
+      poll();return
+    }
+    const s=document.createElement('script');s.src=url
+    s.onload=()=>setTimeout(res,200) // small delay for globals to initialise
+    s.onerror=()=>rej(new Error('Failed to load: '+url))
+    document.head.appendChild(s)
   })
 
   const playSoftPing=useCallback(()=>{
@@ -1281,7 +1293,11 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     setFgStatus('off');setFgMsg('')
   },[])
 
-  const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y)
+  // ── Detection using BlazeFace (face) + COCO-SSD (phone) ─────────────────────
+  // BlazeFace gives bounding boxes with landmarks (eyes, nose, ears, mouth).
+  // We detect sleeping via face bbox height shrinkage (head drooping down = bbox gets taller & shifts).
+  // More reliable than EAR which needs 68-point landmarks.
+  const prevFaceRef=useRef(null) // {topY, height} of previous frame face bbox
 
   const runDetection=useCallback(async()=>{
     if(!videoRef.current||!canvasRef.current||!faceApiReadyRef.current)return
@@ -1291,22 +1307,39 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     canvas.width=video.videoWidth||320;canvas.height=video.videoHeight||240
     canvas.getContext('2d').drawImage(video,0,0,canvas.width,canvas.height)
     try{
-      const dets=await window.faceapi
-        .detectAllFaces(canvas,new window.faceapi.TinyFaceDetectorOptions({scoreThreshold:0.38}))
-        .withFaceLandmarks(true)
-      const faceFound=dets.length>0
+      // 1 ── Face detection via BlazeFace
+      const faces=await window._blazeModel.estimateFaces(canvas,false)
+      const faceFound=faces&&faces.length>0
+
+      // 2 ── Sleeping heuristic: use left/right eye landmarks from BlazeFace
+      // BlazeFace returns 6 keypoints: [rightEye, leftEye, nose, mouth, rightEar, leftEar]
+      let sleeping=false
+      if(faceFound){
+        const face=faces[0]
+        const kp=face.landmarks  // array of [x,y] pairs
+        if(kp&&kp.length>=2){
+          const rightEye=kp[0],leftEye=kp[1]
+          // If both eyes are very close vertically to each other AND
+          // close to the bottom of the face box, head is drooped (sleeping)
+          const eyeMidY=(rightEye[1]+leftEye[1])/2
+          const faceH=face.bottomRight[1]-face.topLeft[1]
+          const faceTopY=face.topLeft[1]
+          // Eyes sitting very low relative to face box = head forward/down
+          const eyeRelY=(eyeMidY-faceTopY)/Math.max(faceH,1)
+          // Normal upright: eyes at ~35-50% of face height
+          // Drooping/sleeping: eyes drop to >65% of face height
+          sleeping=eyeRelY>0.65
+        }
+      }
+
+      // 3 ── Phone detection via COCO-SSD
       let phoneFound=false
       if(cocoReadyRef.current&&window._cocoModel){
         const preds=await window._cocoModel.detect(canvas)
-        phoneFound=preds.some(p=>p.class==='cell phone'&&p.score>0.48)
+        phoneFound=preds.some(p=>p.class==='cell phone'&&p.score>0.45)
       }
-      let sleeping=false
-      if(faceFound&&dets[0].landmarks){
-        const lm=dets[0].landmarks.positions
-        const ear=pts=>{const a=dist(pts[1],pts[5]),b=dist(pts[2],pts[4]),c=dist(pts[0],pts[3]);return(a+b)/(2.0*c)}
-        const avgEAR=(ear(lm.slice(36,42))+ear(lm.slice(42,48)))/2
-        sleeping=avgEAR<0.18
-      }
+
+      // ── Apply rules ─────────────────────────────────────────
       const now=Date.now()
       if(!faceFound){
         if(!absentSinceRef.current)absentSinceRef.current=now
@@ -1338,8 +1371,8 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           setFgStatus('face');setFgMsg('Focused ✓')
         }
       }
-    }catch(e){}
-  },[alertSound,playSound,playSoftPing,setRunning,dist])
+    }catch(e){ console.warn('FocusGuard detection error:',e?.message) }
+  },[alertSound,playSound,playSoftPing,setRunning])
 
   useEffect(()=>{
     if(!focusGuard){stopFocusGuard();return}
@@ -1347,30 +1380,59 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     const start=async()=>{
       setFgStatus('loading');setFgMsg('Loading AI models…')
       try{
-        if(!window.faceapi)await loadScript('https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js')
-        if(!window.tf)await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
-        if(!window.cocoSsd)await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
-        if(!faceApiReadyRef.current){
+        // ── Load TensorFlow.js core ──────────────────────────
+        if(!window.tf){
+          setFgMsg('Loading TensorFlow…')
+          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
+          // Wait for tf global
+          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.tf)return res();if(Date.now()-t0>10000)return rej(new Error('TF timeout'));setTimeout(p,200)};p()})
+        }
+
+        // ── Load BlazeFace — self-contained, NO separate weight files needed ──
+        // @tensorflow-models/blazeface downloads its own weights from storage.googleapis.com
+        if(!window.blazeface){
           setFgMsg('Loading face model…')
-          const M='https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/weights'
-          await Promise.all([window.faceapi.nets.tinyFaceDetector.loadFromUri(M),window.faceapi.nets.faceLandmark68TinyNet.loadFromUri(M)])
+          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js')
+          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.blazeface)return res();if(Date.now()-t0>10000)return rej(new Error('BlazeFace timeout'));setTimeout(p,200)};p()})
+        }
+        if(!faceApiReadyRef.current){
+          setFgMsg('Initialising face model…')
+          window._blazeModel=await window.blazeface.load()
           faceApiReadyRef.current=true
         }
-        if(!cocoReadyRef.current){
+
+        // ── Load COCO-SSD for phone detection ────────────────
+        if(!window.cocoSsd){
           setFgMsg('Loading object model…')
+          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
+          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.cocoSsd)return res();if(Date.now()-t0>15000)return rej(new Error('COCO timeout'));setTimeout(p,200)};p()})
+        }
+        if(!cocoReadyRef.current){
+          setFgMsg('Initialising object model…')
           window._cocoModel=await window.cocoSsd.load()
           cocoReadyRef.current=true
         }
+
         if(cancelled)return
+
+        // ── Start camera ─────────────────────────────────────
         setFgMsg('Starting camera…')
         const stream=await navigator.mediaDevices.getUserMedia({video:{width:320,height:240,facingMode:'user'}})
         if(cancelled){stream.getTracks().forEach(t=>t.stop());return}
         streamRef.current=stream
         if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}
         setFgStatus('ready');setFgMsg('Active — watching 👁')
-        detectionLoopRef.current=setInterval(runDetection,1600)
+        detectionLoopRef.current=setInterval(runDetection,1800)
       }catch(e){
-        if(!cancelled){setFgStatus('error');setFgMsg(e?.message?.includes('ermission')?'Camera permission denied':e?.message||'Failed to start')}
+        if(!cancelled){
+          console.error('FocusGuard startup error:',e)
+          setFgStatus('error')
+          setFgMsg(
+            e?.message?.includes('ermission')?'Camera permission denied':
+            e?.message?.includes('load')||e?.message?.includes('fetch')?'Model load failed — check connection':
+            e?.message||'Failed to start'
+          )
+        }
       }
     }
     start()
