@@ -1198,9 +1198,22 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const endTimeRef=useRef(null)
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
   useEffect(()=>{if(!running)setTimeLeft(durations[mode])},[mode,session,breakT,longBreak])
+  // Single persistent AudioContext — avoids browser suspension on repeated creation
+  const audioCtxRef=useRef(null)
+  const getAudioCtx=useCallback(()=>{
+    if(!audioCtxRef.current){
+      audioCtxRef.current=new(window.AudioContext||window.webkitAudioContext)()
+    }
+    // Resume if suspended (browser requires a user gesture first)
+    if(audioCtxRef.current.state==='suspended'){
+      audioCtxRef.current.resume()
+    }
+    return audioCtxRef.current
+  },[])
+
   const playSound=useCallback((type)=>{
     try{
-      const ctx=new(window.AudioContext||window.webkitAudioContext)()
+      const ctx=getAudioCtx()
       const sounds={
         bell:()=>{const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type='triangle';o.frequency.setValueAtTime(880,ctx.currentTime);o.frequency.exponentialRampToValueAtTime(440,ctx.currentTime+1.5);g.gain.setValueAtTime(0.4,ctx.currentTime);g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+2);o.start();o.stop(ctx.currentTime+2)},
         chime:()=>{[523,659,784,1047].forEach((freq,i)=>{const o=ctx.createOscillator(),g=ctx.createGain();o.connect(g);g.connect(ctx.destination);o.type='sine';o.frequency.value=freq;g.gain.setValueAtTime(0,ctx.currentTime+i*0.15);g.gain.linearRampToValueAtTime(0.25,ctx.currentTime+i*0.15+0.05);g.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+i*0.15+1.5);o.start(ctx.currentTime+i*0.15);o.stop(ctx.currentTime+i*0.15+1.5)})},
@@ -1209,6 +1222,21 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         none:()=>{}
       };(sounds[type]||sounds.bell)()
     }catch(e){}
+  },[getAudioCtx])
+
+  // Unlock AudioContext on first user interaction with the page
+  useEffect(()=>{
+    const unlock=()=>{
+      if(audioCtxRef.current&&audioCtxRef.current.state==='suspended'){
+        audioCtxRef.current.resume()
+      }
+    }
+    document.addEventListener('click',unlock,{once:false})
+    document.addEventListener('keydown',unlock,{once:false})
+    return()=>{
+      document.removeEventListener('click',unlock)
+      document.removeEventListener('keydown',unlock)
+    }
   },[])
   const handleDone=useCallback(()=>{
     clearInterval(intervalRef.current);setRunning(false);endTimeRef.current=null;playSound(alertSound)
@@ -1238,8 +1266,8 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const FONTS=[{id:'Sora',label:'Sora',sample:'25:00'},{id:'Georgia',label:'Serif Classic',sample:'25:00'},{id:'Courier New',label:'Monospace',sample:'25:00'},{id:'system-ui',label:'System',sample:'25:00'},{id:'cursive',label:'Cursive',sample:'25:00'}]
   const SOUNDS=[{id:'bell',label:'🔔 Bell',desc:'Soft triangle bell'},{id:'chime',label:'🎐 Wind Chime',desc:'4-note chime'},{id:'soft',label:'✨ Soft Ding',desc:'Gentle tone'},{id:'pop',label:'💬 Pop',desc:'Quick pop'},{id:'none',label:'🔇 Silent',desc:'No sound'}]
   return(
-    // Pomodoro always fills its container; left offset is now handled by Layout
-    <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:isFullscreen?9999:50,...getBgStyle(),display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden'}}>
+    // left offset matches sidebar (252px) when not fullscreen so dashboard doesn't show through
+    <div style={{position:'fixed',top:0,left:isFullscreen?0:252,right:0,bottom:0,zIndex:isFullscreen?9999:50,...getBgStyle(),display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',overflow:'hidden',transition:'left 0.3s'}}>
       <div style={{position:'absolute',inset:0,background:'rgba(0,0,0,0.52)',zIndex:0}}/>
       {!isFullscreen&&(
         <div style={{position:'absolute',top:24,right:24,display:'flex',gap:12,zIndex:2}}>
@@ -1273,7 +1301,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         </div>
         <div style={{display:'flex',alignItems:'center',gap:16}}>
           <button onClick={reset} style={{width:54,height:54,borderRadius:'50%',background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.3)',color:'white',fontSize:22,cursor:'pointer',backdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.28)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>↺</button>
-          <button onClick={()=>setRunning(r=>!r)} style={{padding:'18px 56px',borderRadius:50,background:'white',border:'none',fontSize:20,fontWeight:800,cursor:'pointer',fontFamily:'Sora,sans-serif',color:'#1a1a2e',boxShadow:'0 8px 32px rgba(0,0,0,0.3)',transition:'all 0.15s',letterSpacing:1}} onMouseEnter={e=>e.currentTarget.style.transform='scale(1.05)'} onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>{running?'pause':'start'}</button>
+          <button onClick={()=>{getAudioCtx();setRunning(r=>!r)}} style={{padding:'18px 56px',borderRadius:50,background:'white',border:'none',fontSize:20,fontWeight:800,cursor:'pointer',fontFamily:'Sora,sans-serif',color:'#1a1a2e',boxShadow:'0 8px 32px rgba(0,0,0,0.3)',transition:'all 0.15s',letterSpacing:1}} onMouseEnter={e=>e.currentTarget.style.transform='scale(1.05)'} onMouseLeave={e=>e.currentTarget.style.transform='scale(1)'}>{running?'pause':'start'}</button>
           <button onClick={skip} style={{width:54,height:54,borderRadius:'50%',background:'rgba(255,255,255,0.15)',border:'2px solid rgba(255,255,255,0.3)',color:'white',fontSize:22,cursor:'pointer',backdropFilter:'blur(10px)',display:'flex',alignItems:'center',justifyContent:'center'}} onMouseEnter={e=>e.currentTarget.style.background='rgba(255,255,255,0.28)'} onMouseLeave={e=>e.currentTarget.style.background='rgba(255,255,255,0.15)'}>⏭</button>
         </div>
         <button onClick={()=>playSound(alertSound)} style={{marginTop:18,background:'transparent',border:'none',color:'rgba(255,255,255,0.4)',fontSize:13,cursor:'pointer',fontWeight:500}} onMouseEnter={e=>e.currentTarget.style.color='rgba(255,255,255,0.8)'} onMouseLeave={e=>e.currentTarget.style.color='rgba(255,255,255,0.4)'}>🔔 test alert sound</button>
@@ -1453,7 +1481,7 @@ export default function App(){
   return(
     // isFullscreen passed to Layout so it hides the sidebar during Focus Mode
     <Layout user={user} page={page} setPage={setPage} theme={theme} setTheme={setTheme} data={data} saveD={saveD} onSignOut={signOut} isFullscreen={pomoFullscreen}>
-      <div style={{position:'fixed',top:0,left:0,right:0,bottom:0,opacity:page==='pomodoro'?1:0,pointerEvents:page==='pomodoro'?'auto':'none',zIndex:page==='pomodoro'?50:-1,transition:'opacity 0.2s'}}>
+      <div style={{position:'fixed',top:0,left:pomoFullscreen?0:252,right:0,bottom:0,opacity:page==='pomodoro'?1:0,pointerEvents:page==='pomodoro'?'auto':'none',zIndex:page==='pomodoro'?50:-1,transition:'opacity 0.2s, left 0.3s'}}>
         <PomodoroPage {...pomoProps}/>
       </div>
 
