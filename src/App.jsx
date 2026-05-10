@@ -1230,20 +1230,19 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     }catch(e){}
   },[getAudioCtx])
 
-  // ── Eagerly preload ML scripts so Focus Guard starts fast ──────
-  // Scripts are injected silently in the background; models are NOT
-  // initialised yet (that still happens on toggle). Just warms the cache.
+  // ── Eagerly preload MediaPipe script so Focus Guard starts instantly ──
+  // MediaPipe is a single ~3MB self-contained script — no external weight fetches.
   useEffect(()=>{
-    const preload=(url)=>{
-      if(!document.querySelector(`script[src="${url}"]`)){
-        const s=document.createElement('script');s.src=url;s.async=true
-        // low priority — use defer-like approach
-        setTimeout(()=>document.head.appendChild(s), 2000)
+    // Inject silently 1.5s after mount so it doesn't compete with page load
+    const t=setTimeout(()=>{
+      if(!document.querySelector('script[src*="mediapipe/face_detection"]')){
+        const s=document.createElement('script')
+        s.src='https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js'
+        s.async=true
+        document.head.appendChild(s)
       }
-    }
-    preload('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
-    preload('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js')
-    preload('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
+    },1500)
+    return()=>clearTimeout(t)
   },[])
 
   // Unlock AudioContext on first user interaction with the page
@@ -1277,22 +1276,12 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const lastDistractionAlertRef=useRef(0)
   const isRunningDetectionRef=useRef(false)  // guard against overlapping detection frames
 
-  const loadScript=url=>new Promise((res,rej)=>{
-    if(document.querySelector(`script[src="${url}"]`)){
-      // already injected — poll until the global it provides is available
-      const t0=Date.now()
-      const poll=()=>{setTimeout(()=>{
-        // resolve after short delay so globals are set
-        if(Date.now()-t0>8000)rej(new Error('Script timeout: '+url))
-        else res()
-      },600)}
-      poll();return
-    }
-    const s=document.createElement('script');s.src=url
-    s.onload=()=>setTimeout(res,200) // small delay for globals to initialise
-    s.onerror=()=>rej(new Error('Failed to load: '+url))
-    document.head.appendChild(s)
-  })
+  // ── Focus Guard detection — MediaPipe + canvas heuristics ─────────────────
+  // MediaPipe Face Detection: single self-contained JS file, NO external weight
+  // fetches to storage.googleapis.com. Works fully offline after first load.
+  // Phone/screen detection: pure canvas pixel heuristics — no ML model needed,
+  // no network dependency, instant.
+  const DISTRACTION_COOLDOWN=15000   // 15s between soft pings
 
   const playSoftPing=useCallback(()=>{
     try{
@@ -1308,100 +1297,115 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   },[getAudioCtx])
 
   const stopFocusGuard=useCallback(()=>{
-    clearTimeout(detectionLoopRef.current)   // chained setTimeout, not setInterval
+    clearTimeout(detectionLoopRef.current)
     isRunningDetectionRef.current=false
     if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
+    // Stop MediaPipe face detection
+    if(window._mpFaceDetection){try{window._mpFaceDetection.close()}catch(e){}}
     absentSinceRef.current=null
     guardPausedRef.current=false
     setFgStatus('off');setFgMsg('')
   },[])
 
-  // ── Detection: BlazeFace (face/sleep) + COCO-SSD (phone) + screen-glow heuristic ──
-  // Canvas is downscaled to 160×120 to keep CPU low.
-  // Uses chained setTimeout (not setInterval) so frames never pile up.
-  // DISTRACTION_COOLDOWN: 15s between soft pings to avoid continuous noise.
-  const DISTRACTION_COOLDOWN=15000
+  // ── Pure canvas heuristics (no ML needed) ─────────────────────────────────
+  // 1. Screen glow: phone screen facing camera = very bright uniform centre
+  // 2. Sleeping: face bbox shrinks vertically (head droop) — tracked across frames
+  const prevFaceSizeRef=useRef(null)
 
-  // Screen-glow heuristic: sample brightness of a center strip of the image.
-  // A phone screen held to camera floods the frame with bright uniform light.
-  const detectScreenGlow=useCallback((ctx,w,h)=>{
+  const analyseCanvas=useCallback((ctx,w,h,faceBox)=>{
+    // Screen glow heuristic — sample centre strip brightness
+    let screenGlow=false
     try{
-      // Sample a 60×40 strip in the centre of the frame
-      const sw=Math.round(w*0.4),sh=Math.round(h*0.35)
+      const sw=Math.round(w*0.5),sh=Math.round(h*0.4)
       const sx=Math.round((w-sw)/2),sy=Math.round((h-sh)/2)
       const d=ctx.getImageData(sx,sy,sw,sh).data
-      let totalBright=0,count=0
-      for(let i=0;i<d.length;i+=16){ // every 4th pixel (r channel)
-        totalBright+=d[i];count++
+      let bright=0,count=0
+      for(let i=0;i<d.length;i+=20){bright+=d[i];count++}
+      const avg=count?bright/count:0
+      // Also check uniformity — a phone screen is very uniform, not just bright
+      let variance=0
+      for(let i=0;i<d.length;i+=20){variance+=Math.abs(d[i]-avg)}
+      const uniformity=count?variance/count:999
+      screenGlow=avg>195&&uniformity<30
+    }catch(e){}
+
+    // Sleeping heuristic via face bbox vertical size change
+    let sleeping=false
+    if(faceBox){
+      const {xMin,yMin,width,height}=faceBox
+      const eyeRelY=yMin+(height*0.38) // approx eye position in bbox
+      const faceH=height*h
+      if(prevFaceSizeRef.current!==null){
+        // If face height suddenly drops >30%, head drooped (sleeping/looking down)
+        const drop=(prevFaceSizeRef.current-faceH)/Math.max(prevFaceSizeRef.current,1)
+        sleeping=drop>0.28&&faceH>0
       }
-      const avgBrightness=count?totalBright/count:0
-      // High uniform brightness (>200/255) across centre = likely screen glare
-      return avgBrightness>200
-    }catch{return false}
+      prevFaceSizeRef.current=faceH
+    } else {
+      prevFaceSizeRef.current=null
+    }
+    return{screenGlow,sleeping}
   },[])
 
-  const scheduleDetection=useCallback(()=>{
-    if(!focusGuard||!faceApiReadyRef.current)return
-    detectionLoopRef.current=setTimeout(async()=>{
-      await runDetectionFrame()
-      scheduleDetection() // chain next frame only after current completes
-    },3000) // 3s between frames — enough to catch distraction, light on CPU
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[focusGuard])
+  // ── MediaPipe face detection setup ────────────────────────────────────────
+  const setupMediaPipe=useCallback(()=>{
+    return new Promise((resolve,reject)=>{
+      try{
+        const FaceDetection=window.FaceDetection||window.faceDetection?.FaceDetection
+        if(!FaceDetection) return reject(new Error('MediaPipe not loaded'))
 
+        const fd=new FaceDetection({
+          locateFile:(f)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/${f}`
+        })
+        fd.setOptions({model:'short',minDetectionConfidence:0.5})
+
+        fd.onResults((results)=>{
+          if(!window._mpLatestResults) window._mpLatestResults={}
+          window._mpLatestResults.detections=results.detections||[]
+          window._mpLatestResults.ts=Date.now()
+        })
+
+        window._mpFaceDetection=fd
+        resolve(fd)
+      }catch(e){reject(e)}
+    })
+  },[])
+
+  // ── Per-frame detection ───────────────────────────────────────────────────
   const runDetectionFrame=useCallback(async()=>{
     if(isRunningDetectionRef.current)return
     if(!videoRef.current||!canvasRef.current||!faceApiReadyRef.current)return
     const video=videoRef.current
     if(video.readyState<2)return
     isRunningDetectionRef.current=true
+
     const canvas=canvasRef.current
-    // ── 160×120 = 4× fewer pixels than 320×240, ~4× faster inference ──
     const W=160,H=120
     canvas.width=W;canvas.height=H
     const ctx=canvas.getContext('2d')
     ctx.drawImage(video,0,0,W,H)
+
     try{
-      // 1 ── Face presence + sleep heuristic (BlazeFace)
-      const faces=await window._blazeModel.estimateFaces(canvas,false)
-      const faceFound=!!(faces&&faces.length>0)
-      let sleeping=false
-      if(faceFound){
-        const face=faces[0]
-        const kp=face.landmarks // [[x,y],...] — [rightEye,leftEye,nose,mouth,rightEar,leftEar]
-        if(kp&&kp.length>=2){
-          const eyeMidY=(kp[0][1]+kp[1][1])/2
-          const faceH=Math.max(face.bottomRight[1]-face.topLeft[1],1)
-          const eyeRelY=(eyeMidY-face.topLeft[1])/faceH
-          // Eyes normally sit at 35-55% of face height.
-          // When head droops down (sleeping), eyes shift to >65%.
-          sleeping=eyeRelY>0.65
+      // Send frame to MediaPipe
+      let faceBox=null
+      if(window._mpFaceDetection){
+        await window._mpFaceDetection.send({image:video})
+        // Results come via onResults callback — read the latest
+        const r=window._mpLatestResults
+        if(r&&r.detections&&r.detections.length>0){
+          // Use the first detection's bounding box (normalised 0-1)
+          const box=r.detections[0].boundingBox||r.detections[0].relativeKeypoints
+          if(r.detections[0].boundingBox){faceBox=r.detections[0].boundingBox}
         }
       }
+      const faceFound=faceBox!==null
 
-      // 2 ── Phone object detection (COCO-SSD) — runs on same downscaled canvas
-      let phoneFound=false
-      if(cocoReadyRef.current&&window._cocoModel){
-        const preds=await window._cocoModel.detect(canvas)
-        // Detect phone itself OR laptop/tv/remote as proxy for screen-watching
-        // Also flag high confidence on 'book' held very close (often misclassified phone)
-        phoneFound=preds.some(p=>
-          (['cell phone','remote'].includes(p.class)&&p.score>0.40)||
-          (['laptop','tv'].includes(p.class)&&p.score>0.55)
-        )
-      }
+      // Canvas heuristics
+      const{screenGlow,sleeping}=analyseCanvas(ctx,W,H,faceBox)
 
-      // 3 ── Screen-glow heuristic: catches phone screen facing camera
-      // Only run if no face found (person walked away holding phone to camera)
-      // OR if face found but COCO missed the physical device
-      const screenGlow=detectScreenGlow(ctx,W,H)
-      // Phone-screen-to-camera detection: glow detected AND either COCO agrees OR face is still present
-      const phoneScreenDetected=screenGlow&&(phoneFound||faceFound)
-
-      // ── Apply rules ──────────────────────────────────────────────
+      // ── Apply rules ──────────────────────────────────────────────────
       const now=Date.now()
-      if(!faceFound&&!phoneScreenDetected){
-        // User is genuinely absent
+      if(!faceFound&&!screenGlow){
         if(!absentSinceRef.current)absentSinceRef.current=now
         const secs=(now-absentSinceRef.current)/1000
         setFgStatus('absent');setFgMsg(`Away ${Math.round(secs)}s…`)
@@ -1412,7 +1416,6 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           setFgMsg('Timer paused — come back! 👀')
         }
       } else {
-        // Face present OR phone screen detected
         if(absentSinceRef.current){
           absentSinceRef.current=null
           if(guardPausedRef.current&&!manuallyPausedRef.current){
@@ -1423,8 +1426,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           }
         }
         const cooldownOk=now-lastDistractionAlertRef.current>DISTRACTION_COOLDOWN
-        if(phoneFound||phoneScreenDetected){
-          // Phone detected (object OR screen glow) — distract alert, ONE ping per cooldown
+        if(screenGlow){
           setFgStatus('phone');setFgMsg('📱 Put the phone down!')
           if(cooldownOk){lastDistractionAlertRef.current=now;playSoftPing()}
         } else if(sleeping){
@@ -1434,46 +1436,61 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           setFgStatus('face');setFgMsg('Focused ✓')
         }
       }
-    }catch(e){console.warn('FocusGuard frame error:',e?.message)}
+    }catch(e){console.warn('FocusGuard frame:',e?.message)}
     finally{isRunningDetectionRef.current=false}
-  },[alertSound,playSound,playSoftPing,setRunning,detectScreenGlow,DISTRACTION_COOLDOWN])
+  },[alertSound,playSound,playSoftPing,setRunning,analyseCanvas,DISTRACTION_COOLDOWN])
 
+  const scheduleDetection=useCallback(()=>{
+    if(!faceApiReadyRef.current)return
+    detectionLoopRef.current=setTimeout(async()=>{
+      if(faceApiReadyRef.current){
+        await runDetectionFrame()
+        scheduleDetection()
+      }
+    },2800)
+  },[runDetectionFrame])
+
+  // ── Main effect: start/stop Focus Guard ───────────────────────────────────
   useEffect(()=>{
     if(!focusGuard){stopFocusGuard();return}
     let cancelled=false
     const start=async()=>{
-      setFgStatus('loading');setFgMsg('Loading AI models…')
+      setFgStatus('loading');setFgMsg('Loading face model…')
       try{
-        // ── TensorFlow.js core (backend: WebGL for GPU, falls back to CPU) ──
-        if(!window.tf){
-          setFgMsg('Loading TensorFlow…')
-          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
-          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.tf)return res();if(Date.now()-t0>12000)return rej(new Error('TF timeout'));setTimeout(p,300)};p()})
+        // ── MediaPipe: single script, weights served from same CDN, no googleapis ──
+        if(!window.FaceDetection&&!window.faceDetection){
+          await new Promise((res,rej)=>{
+            const url='https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4.1646425229/face_detection.js'
+            if(document.querySelector(`script[src="${url}"]`)){
+              // Already injected by preload — wait for global
+              const t0=Date.now()
+              const poll=()=>{
+                if(window.FaceDetection||window.faceDetection)return res()
+                if(Date.now()-t0>15000)return rej(new Error('MediaPipe timeout'))
+                setTimeout(poll,300)
+              };poll()
+              return
+            }
+            const s=document.createElement('script');s.src=url
+            s.onload=()=>{
+              const t0=Date.now()
+              const poll=()=>{
+                if(window.FaceDetection||window.faceDetection)return res()
+                if(Date.now()-t0>10000)return rej(new Error('MediaPipe init timeout'))
+                setTimeout(poll,300)
+              };poll()
+            }
+            s.onerror=()=>rej(new Error('Failed to load MediaPipe script'))
+            document.head.appendChild(s)
+          })
         }
-        // ── BlazeFace — self-contained, fetches its own weights automatically ──
-        if(!window.blazeface){
-          setFgMsg('Loading face model…')
-          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js')
-          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.blazeface)return res();if(Date.now()-t0>12000)return rej(new Error('BlazeFace timeout'));setTimeout(p,300)};p()})
-        }
-        if(!faceApiReadyRef.current){
-          setFgMsg('Initialising face model…')
-          window._blazeModel=await window.blazeface.load()
-          faceApiReadyRef.current=true
-        }
-        // ── COCO-SSD — phone/laptop/tv detection ──────────────
-        if(!window.cocoSsd){
-          setFgMsg('Loading object model…')
-          await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
-          await new Promise((res,rej)=>{const t0=Date.now();const p=()=>{if(window.cocoSsd)return res();if(Date.now()-t0>18000)return rej(new Error('COCO timeout'));setTimeout(p,300)};p()})
-        }
-        if(!cocoReadyRef.current){
-          setFgMsg('Initialising object model…')
-          window._cocoModel=await window.cocoSsd.load()
-          cocoReadyRef.current=true
-        }
+
         if(cancelled)return
-        // ── Camera — ask for low-res to reduce bandwidth + CPU ──
+        setFgMsg('Initialising detector…')
+        await setupMediaPipe()
+        faceApiReadyRef.current=true
+
+        if(cancelled)return
         setFgMsg('Starting camera…')
         const stream=await navigator.mediaDevices.getUserMedia({
           video:{width:{ideal:320},height:{ideal:240},facingMode:'user'}
@@ -1481,8 +1498,8 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
         if(cancelled){stream.getTracks().forEach(t=>t.stop());return}
         streamRef.current=stream
         if(videoRef.current){videoRef.current.srcObject=stream;await videoRef.current.play()}
+
         setFgStatus('ready');setFgMsg('Active — watching 👁')
-        // Use chained setTimeout so frames never pile up (scheduleDetection calls itself)
         scheduleDetection()
       }catch(e){
         if(!cancelled){
@@ -1490,15 +1507,17 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
           setFgStatus('error')
           setFgMsg(
             e?.message?.includes('ermission')?'Camera permission denied':
-            e?.message?.includes('timeout')||e?.message?.includes('load')?'Model load failed — check connection':
+            e?.message?.includes('timeout')?'Model timed out — retry':
+            e?.message?.includes('Failed to load')?'Script blocked — check network':
             e?.message||'Failed to start'
           )
         }
       }
     }
     start()
-    return()=>{cancelled=true;stopFocusGuard()}
-  },[focusGuard,scheduleDetection])
+    return()=>{cancelled=true;faceApiReadyRef.current=false;stopFocusGuard()}
+  },[focusGuard,scheduleDetection,setupMediaPipe,stopFocusGuard])
+
 
   const handleStartStop=()=>{
     getAudioCtx()
