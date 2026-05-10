@@ -138,6 +138,7 @@ const defaultData = () => ({
   theme:'light', dailyGoal:120, weeklyGoal:600,
   timerFont:'Sora', alertSound:'bell',
   uploadedBg:null, spotifyUrl:'', avatar:null,
+  pomoLoop:false, pomoLoopCount:4,
   displayName:'', importedCalEvents:[],
 })
 
@@ -1195,6 +1196,10 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   const[settingsTab,setSettingsTab]=useState('timer')
   const[timerFont,setTimerFont]=useState(data.timerFont||'Sora')
   const[alertSound,setAlertSound]=useState(data.alertSound||'bell')
+  // ── Loop / session count ─────────────────────────────────────
+  const[loopEnabled,setLoopEnabled]=useState(data.pomoLoop||false)
+  const[loopCount,setLoopCount]=useState(data.pomoLoopCount||4)   // how many pomodoros per loop
+  const loopCycleRef=useRef(0)   // pomodoros completed in current loop run
   const intervalRef=useRef(null)
   const endTimeRef=useRef(null)
   const durations={pomodoro:session*60,short:breakT*60,long:longBreak*60}
@@ -1224,6 +1229,22 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       };(sounds[type]||sounds.bell)()
     }catch(e){}
   },[getAudioCtx])
+
+  // ── Eagerly preload ML scripts so Focus Guard starts fast ──────
+  // Scripts are injected silently in the background; models are NOT
+  // initialised yet (that still happens on toggle). Just warms the cache.
+  useEffect(()=>{
+    const preload=(url)=>{
+      if(!document.querySelector(`script[src="${url}"]`)){
+        const s=document.createElement('script');s.src=url;s.async=true
+        // low priority — use defer-like approach
+        setTimeout(()=>document.head.appendChild(s), 2000)
+      }
+    }
+    preload('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js')
+    preload('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js')
+    preload('https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js')
+  },[])
 
   // Unlock AudioContext on first user interaction with the page
   useEffect(()=>{
@@ -1490,11 +1511,48 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
 
 
   const handleDone=useCallback(()=>{
-    clearInterval(intervalRef.current);setRunning(false);endTimeRef.current=null;playSound(alertSound)
+    clearInterval(intervalRef.current)
+    endTimeRef.current=null
     manuallyPausedRef.current=false;guardPausedRef.current=false
-    if(mode==='pomodoro'){setCycles(c=>c+1);saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})}
+    playSound(alertSound)
+
+    if(mode==='pomodoro'){
+      const newCycles=loopCycleRef.current+1
+      setCycles(c=>c+1)
+      saveD({...data,sessions:[...(data.sessions||[]),{id:Date.now(),mins:session,date:new Date().toISOString()}]})
+
+      if(loopEnabled){
+        loopCycleRef.current=newCycles
+        const isLongBreakTime=newCycles>0&&newCycles%4===0
+        // Auto-advance: switch to appropriate break and restart
+        const nextMode=isLongBreakTime?'long':'short'
+        setMode(nextMode)
+        const nextDur=isLongBreakTime?longBreak*60:breakT*60
+        setTimeLeft(nextDur)
+        if(newCycles<loopCount*2){  // loopCount pomodoros + their breaks
+          setTimeout(()=>{endTimeRef.current=Date.now()+nextDur*1000;setRunning(true)},800)
+        } else {
+          // All loops done
+          loopCycleRef.current=0
+          setRunning(false)
+          setMode('pomodoro')
+          setTimeLeft(session*60)
+        }
+        return
+      }
+    } else {
+      // Break finished — if looping, auto-start next pomodoro
+      if(loopEnabled){
+        setMode('pomodoro')
+        const nextDur=session*60
+        setTimeLeft(nextDur)
+        setTimeout(()=>{endTimeRef.current=Date.now()+nextDur*1000;setRunning(true)},800)
+        return
+      }
+    }
+    setRunning(false)
     setTimeLeft(durations[mode])
-  },[mode,session,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft])
+  },[mode,session,breakT,longBreak,alertSound,data,saveD,durations,playSound,setRunning,setCycles,setTimeLeft,setMode,loopEnabled,loopCount])
   const tick=useCallback(()=>{
     if(!endTimeRef.current)return
     const remaining=Math.round((endTimeRef.current-Date.now())/1000)
@@ -1511,7 +1569,7 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
     return()=>document.removeEventListener('visibilitychange',onVisible)
   },[running,handleDone,setTimeLeft])
   const reset=()=>{setRunning(false);endTimeRef.current=null;setTimeLeft(durations[mode])}
-  const skip=()=>{setRunning(false);endTimeRef.current=null;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
+  const skip=()=>{setRunning(false);endTimeRef.current=null;loopCycleRef.current=0;setMode(m=>m==='pomodoro'?'short':'pomodoro')}
   const getEmbedUrl=url=>{if(!url)return null;const m1=url.match(/playlist\/([a-zA-Z0-9]+)/);if(m1)return`https://open.spotify.com/embed/playlist/${m1[1]}?utm_source=generator&theme=0`;const m2=url.match(/album\/([a-zA-Z0-9]+)/);if(m2)return`https://open.spotify.com/embed/album/${m2[1]}?utm_source=generator&theme=0`;const m3=url.match(/track\/([a-zA-Z0-9]+)/);if(m3)return`https://open.spotify.com/embed/track/${m3[1]}?utm_source=generator&theme=0`;return null}
   const embedUrl=getEmbedUrl(spotifyUrl)
   const getBgStyle=()=>{if(bg==='uploaded'&&uploadedBg)return{background:`url(${uploadedBg}) center/cover`};return{background:POMO_BGS[bg]||POMO_BGS.lofi1}}
@@ -1557,6 +1615,17 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
             <button key={key} onClick={()=>{setMode(key);setRunning(false);endTimeRef.current=null}} style={{padding:'11px 24px',borderRadius:50,border:`2px solid ${mode===key?'white':'rgba(255,255,255,0.3)'}`,background:mode===key?'white':'transparent',color:mode===key?'#1a1a2e':'white',fontSize:15,fontWeight:700,cursor:'pointer',fontFamily:'Sora,sans-serif',transition:'all 0.2s',backdropFilter:'blur(10px)'}}>{label}</button>
           ))}
         </div>
+        {loopEnabled&&(
+          <div style={{marginBottom:12,display:'flex',alignItems:'center',gap:6,justifyContent:'center'}}>
+            <span style={{fontSize:12,color:'rgba(255,255,255,0.55)',fontWeight:600}}>🔁 Loop</span>
+            <div style={{display:'flex',gap:5}}>
+              {Array.from({length:loopCount},(_,i)=>(
+                <div key={i} style={{width:8,height:8,borderRadius:'50%',background:i<loopCycleRef.current?'rgba(255,255,255,0.9)':i===loopCycleRef.current&&mode==='pomodoro'?'var(--primary)':'rgba(255,255,255,0.25)',transition:'all 0.3s',boxShadow:i===loopCycleRef.current&&mode==='pomodoro'?'0 0 8px var(--primary)':'none'}}/>
+              ))}
+            </div>
+            <span style={{fontSize:12,color:'rgba(255,255,255,0.55)',fontWeight:600}}>{loopCycleRef.current}/{loopCount}</span>
+          </div>
+        )}
         <div style={{marginBottom:44,textAlign:'center'}}>
           <div style={{fontSize:128,fontWeight:800,color:'white',fontFamily:`'${timerFont}',sans-serif`,letterSpacing:'-4px',lineHeight:1,textShadow:'0 4px 40px rgba(0,0,0,0.6)'}}>{fmtTime(timeLeft)}</div>
           <div style={{fontSize:15,color:'rgba(255,255,255,0.5)',marginTop:10,fontWeight:500}}>{mode==='pomodoro'?`${session} min focus`:mode==='short'?`${breakT} min short break`:`${longBreak} min long break`}</div>
@@ -1599,9 +1668,37 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
                       <div key={label}><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:6}}>{label}</label><input type="number" min={min} max={max} value={val} onChange={e=>onChange(+e.target.value)} style={{width:'100%',padding:'12px',border:'2px solid var(--border)',borderRadius:10,background:'var(--input)',color:'var(--text)',fontSize:18,fontWeight:700,outline:'none',textAlign:'center'}}/><span style={{fontSize:11,color:'var(--text2)',display:'block',textAlign:'center',marginTop:3}}>minutes</span></div>
                     ))}
                   </div>
-                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}}>
+                  <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:18}}>
                     <div><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:6}}>🎯 Daily Goal</label><input type="number" min={10} max={600} value={data.dailyGoal||120} onChange={e=>saveD({...data,dailyGoal:+e.target.value})} style={{width:'100%',padding:'12px',border:'2px solid var(--border)',borderRadius:10,background:'var(--input)',color:'var(--text)',fontSize:18,fontWeight:700,outline:'none',textAlign:'center'}}/><span style={{fontSize:11,color:'var(--text2)',display:'block',textAlign:'center',marginTop:3}}>min/day</span></div>
                     <div><label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:6}}>📅 Weekly Goal</label><input type="number" min={60} max={3000} value={data.weeklyGoal||600} onChange={e=>saveD({...data,weeklyGoal:+e.target.value})} style={{width:'100%',padding:'12px',border:'2px solid var(--border)',borderRadius:10,background:'var(--input)',color:'var(--text)',fontSize:18,fontWeight:700,outline:'none',textAlign:'center'}}/><span style={{fontSize:11,color:'var(--text2)',display:'block',textAlign:'center',marginTop:3}}>min/week</span></div>
+                  </div>
+                  {/* ── Loop Sessions ── */}
+                  <div style={{background:'var(--bg)',borderRadius:14,padding:16,border:'1px solid var(--border)'}}>
+                    <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:loopEnabled?14:0}}>
+                      <div>
+                        <div style={{fontSize:14,fontWeight:700,color:'var(--text)',marginBottom:2}}>🔁 Loop Sessions</div>
+                        <div style={{fontSize:11,color:'var(--text2)'}}>Auto-cycle through pomodoros and breaks</div>
+                      </div>
+                      <div onClick={()=>{const v=!loopEnabled;setLoopEnabled(v);loopCycleRef.current=0;saveD({...data,pomoLoop:v})}} style={{width:44,height:24,borderRadius:50,background:loopEnabled?'var(--primary)':'#ccc',cursor:'pointer',position:'relative',transition:'background 0.25s',flexShrink:0}}>
+                        <div style={{width:18,height:18,borderRadius:'50%',background:'white',position:'absolute',top:3,left:loopEnabled?23:3,transition:'left 0.2s',boxShadow:'0 1px 4px rgba(0,0,0,0.2)'}}/>
+                      </div>
+                    </div>
+                    {loopEnabled&&(
+                      <div>
+                        <label style={{fontSize:12,fontWeight:600,color:'var(--text2)',display:'block',marginBottom:8}}>Number of Pomodoros per loop</label>
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                          {[1,2,3,4,5,6,8].map(n=>(
+                            <div key={n} onClick={()=>{setLoopCount(n);loopCycleRef.current=0;saveD({...data,pomoLoopCount:n})}} style={{width:44,height:44,borderRadius:12,display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:700,cursor:'pointer',border:`2px solid ${loopCount===n?'var(--primary)':'var(--border)'}`,background:loopCount===n?'rgba(108,99,255,0.1)':'var(--bg)',color:loopCount===n?'var(--primary)':'var(--text)',transition:'all 0.15s',fontFamily:'Sora,sans-serif'}}>
+                              {n}
+                            </div>
+                          ))}
+                        </div>
+                        <div style={{marginTop:12,padding:'10px 12px',background:'rgba(108,99,255,0.07)',borderRadius:10,fontSize:12,color:'var(--text2)',lineHeight:1.7}}>
+                          <strong style={{color:'var(--text)'}}>Sequence:</strong> {Array.from({length:loopCount},(_,i)=>`🍅${i>0&&i%4===3?' 🌙':' ☕'}`).join(' → ')}
+                          <br/>Total: <strong style={{color:'var(--primary)'}}>{loopCount}</strong> pomodoros · <strong style={{color:'var(--success)'}}>{loopCount-1}</strong> short breaks{loopCount>=4?<> · <strong style={{color:'var(--warning)'}}>1</strong> long break</>:null}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
