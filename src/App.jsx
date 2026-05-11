@@ -1310,10 +1310,13 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
   // ── Pure canvas heuristics (no ML needed) ─────────────────────────────────
   // 1. Screen glow: phone screen facing camera = very bright uniform centre
   // 2. Sleeping: face bbox shrinks vertically (head droop) — tracked across frames
-  const prevFaceSizeRef=useRef(null)
+  // Sleeping: count consecutive frames where face is very low in frame
+  // Writing = lean forward briefly. Sleeping = sustained head droop for many frames.
+  const sleepFrameCountRef=useRef(0)   // consecutive "suspicious" frames
+  const SLEEP_FRAME_THRESHOLD=6        // ~18s at 3s/frame before flagging sleep
 
   const analyseCanvas=useCallback((ctx,w,h,faceBox)=>{
-    // Screen glow heuristic — sample centre strip brightness
+    // ── Screen glow heuristic ─────────────────────────────────────────────
     let screenGlow=false
     try{
       const sw=Math.round(w*0.5),sh=Math.round(h*0.4)
@@ -1322,30 +1325,39 @@ function PomodoroPage({user,data,saveD,running,setRunning,timeLeft,setTimeLeft,m
       let bright=0,count=0
       for(let i=0;i<d.length;i+=20){bright+=d[i];count++}
       const avg=count?bright/count:0
-      // Also check uniformity — a phone screen is very uniform, not just bright
       let variance=0
       for(let i=0;i<d.length;i+=20){variance+=Math.abs(d[i]-avg)}
       const uniformity=count?variance/count:999
       screenGlow=avg>195&&uniformity<30
     }catch(e){}
 
-    // Sleeping heuristic via face bbox vertical size change
+    // ── Sleeping heuristic — sustained face position, NOT single-frame change ─
+    // Writing = leaning forward briefly (1-2 frames). Sleeping = head stays very
+    // low in the frame for many consecutive frames.
+    // We look at where the face sits vertically in the full frame (yMin normalised).
+    // When head droops down, the face bbox top (yMin) moves toward bottom of frame.
     let sleeping=false
     if(faceBox){
-      const {xMin,yMin,width,height}=faceBox
-      const eyeRelY=yMin+(height*0.38) // approx eye position in bbox
-      const faceH=height*h
-      if(prevFaceSizeRef.current!==null){
-        // If face height suddenly drops >30%, head drooped (sleeping/looking down)
-        const drop=(prevFaceSizeRef.current-faceH)/Math.max(prevFaceSizeRef.current,1)
-        sleeping=drop>0.28&&faceH>0
+      // yMin is normalised 0-1 top of the face bbox within the video frame.
+      // Normally upright at a desk: face sits in top-half (yMin ~0.05–0.45).
+      // Head drooped down (sleeping): face slides toward bottom (yMin > 0.55).
+      const faceTopNorm=faceBox.yMin   // 0=very top of frame, 1=very bottom
+      const headVeryLow=faceTopNorm>0.55
+
+      if(headVeryLow){
+        sleepFrameCountRef.current+=1
+      } else {
+        // Reset immediately — any normal position clears the counter
+        sleepFrameCountRef.current=0
       }
-      prevFaceSizeRef.current=faceH
+      // Only flag sleeping after SLEEP_FRAME_THRESHOLD consecutive low frames
+      sleeping=sleepFrameCountRef.current>=SLEEP_FRAME_THRESHOLD
     } else {
-      prevFaceSizeRef.current=null
+      // Face absent — reset sleep counter (absence is handled separately)
+      sleepFrameCountRef.current=0
     }
     return{screenGlow,sleeping}
-  },[])
+  },[SLEEP_FRAME_THRESHOLD])
 
   // ── MediaPipe face detection setup ────────────────────────────────────────
   const setupMediaPipe=useCallback(()=>{
