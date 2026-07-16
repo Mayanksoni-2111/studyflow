@@ -31,7 +31,7 @@ td{padding:12px 16px;font-size:14px;}
 `;document.head.appendChild(st)
 
 const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
-const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9jZW5jeGluYXd4Y2Fic2Fjc25wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NzQ1NzYsImV4cCI6MjA5MTE1MDU3Nn0.uDX_xy3NLCvz-eZO7WSLdr0bLoi1wBQRW-bI9WpNsDc'
+const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
 if(!window.__supaLoaded){
   window.__supaLoaded = true
   const s = document.createElement('script')
