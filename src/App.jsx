@@ -31,8 +31,7 @@ td{padding:12px 16px;font-size:14px;}
 `;document.head.appendChild(st)
 
 const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
-const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
-
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9jZW5jeGluYXd4Y2Fic2Fjc25wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NzQ1NzYsImV4cCI6MjA5MTE1MDU3Nn0.uDX_xy3NLCvz-eZO7WSLdr0bLoi1wBQRW-bI9WpNsDc'
 if(!window.__supaLoaded){
   window.__supaLoaded = true
   const s = document.createElement('script')
@@ -96,6 +95,16 @@ const supa = {
     if(error) return null
     return data?.data || null
   },
+  async resetPassword(email){
+  const c = await waitClient()
+  return c.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin + '/?reset=true',
+  })
+},
+async updatePassword(newPassword){
+  const c = await waitClient()
+  return c.auth.updateUser({ password: newPassword })
+},
   // Patch ONLY the avatar field — reads current row, sets avatar to new value, writes back.
   // Pass null to delete the old avatar, pass a base64 string to save a new one.
   async patchAvatar(userId, avatarValue){
@@ -158,12 +167,24 @@ function AuthPage({onLogin}){
   const[mode,setMode]=useState('login')
   const[form,setForm]=useState({name:'',email:'',password:''})
   const[err,setErr]=useState('')
+  const[msg,setMsg]=useState('')
   const[loading,setLoading]=useState(false)
   const[sdkReady,setSdkReady]=useState(false)
+  const[newPass,setNewPass]=useState('')
+  const[newPass2,setNewPass2]=useState('')
+
+  // Check if this is a password reset redirect (token in URL hash)
+  const isResetFlow = window.location.hash.includes('access_token') ||
+                      window.location.search.includes('reset=true')
 
   useEffect(()=>{
     waitClient().then(async c => {
       setSdkReady(true)
+      // Handle reset token in URL
+      if(window.location.hash.includes('access_token')){
+        setMode('reset')
+        return
+      }
       const { data:{ session } } = await c.auth.getSession()
       if(session?.user){
         const uid = session.user.id
@@ -180,7 +201,27 @@ function AuthPage({onLogin}){
   },[])
 
   const submit = async () => {
-    setErr('')
+    setErr(''); setMsg('')
+    if(mode==='forgot'){
+      if(!form.email.trim()){ setErr('Enter your email.'); return }
+      setLoading(true)
+      const { error } = await supa.resetPassword(form.email.trim())
+      setLoading(false)
+      if(error) setErr(error.message)
+      else setMsg('✅ Password reset email sent! Check your inbox.')
+      return
+    }
+    if(mode==='reset'){
+      if(!newPass || newPass.length < 6){ setErr('Password must be at least 6 characters.'); return }
+      if(newPass !== newPass2){ setErr('Passwords do not match.'); return }
+      setLoading(true)
+      const { error } = await supa.updatePassword(newPass)
+      setLoading(false)
+      if(error){ setErr(error.message); return }
+      setMsg('✅ Password updated! Logging you in...')
+      setTimeout(()=>{ window.location.href = window.location.origin }, 1500)
+      return
+    }
     if(!form.email.trim() || !form.password.trim()){ setErr('Email and password required.'); return }
     setLoading(true)
     try {
@@ -225,7 +266,7 @@ function AuthPage({onLogin}){
 
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#667eea 0%,#764ba2 50%,#43c6ac 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20,fontFamily:'Sora,sans-serif'}}>
-      <div style={{width:400,maxWidth:'100%',padding:35,borderRadius:24,background:'rgba(255,255,255,0.1)',backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.2)',boxShadow:'0 25px 60px rgba(0,0,0,0.3)',color:'white',animation:'fadeIn 0.6s ease'}}>
+      <div style={{width:400,maxWidth:'100%',padding:35,borderRadius:24,background:'rgba(255,255,255,0.1)',backdropFilter:'blur(20px)',border:'1px solid rgba(255,255,255,0.2)',boxShadow:'0 25px 60px rgba(0,0,0,0.3)',color:'white'}}>
         <div style={{textAlign:'center',marginBottom:25}}>
           <div style={{fontSize:42}}>📚</div>
           <h1 style={{fontSize:28,fontWeight:800}}>StudyFlow</h1>
@@ -236,19 +277,52 @@ function AuthPage({onLogin}){
             <div style={{fontSize:28,marginBottom:10}}>⏳</div>
             <p style={{fontSize:14}}>Connecting to server...</p>
           </div>
+        ) : mode==='reset' ? (
+          // ── Reset password form ──
+          <div>
+            <h2 style={{fontSize:18,fontWeight:700,marginBottom:6}}>Set New Password</h2>
+            <p style={{fontSize:13,opacity:0.7,marginBottom:18}}>Enter your new password below.</p>
+            <input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="New password (min 6 chars)" style={inp}/>
+            <input type="password" value={newPass2} onChange={e=>setNewPass2(e.target.value)} placeholder="Confirm new password" style={{...inp,marginBottom:0}} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()}/>
+            {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,margin:'14px 0',lineHeight:1.6}}>{err}</div>}
+            {msg&&<div style={{background:'rgba(67,198,172,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,margin:'14px 0',lineHeight:1.6}}>{msg}</div>}
+            <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora',marginTop:14}}>
+              {loading?'⏳ Updating...':'Update Password →'}
+            </button>
+          </div>
+        ) : mode==='forgot' ? (
+          // ── Forgot password form ──
+          <div>
+            <h2 style={{fontSize:18,fontWeight:700,marginBottom:6}}>Reset Password</h2>
+            <p style={{fontSize:13,opacity:0.7,marginBottom:18}}>Enter your email and we'll send a reset link.</p>
+            <input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="Your email" style={inp} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()}/>
+            {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{err}</div>}
+            {msg&&<div style={{background:'rgba(67,198,172,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{msg}</div>}
+            <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora',marginBottom:14}}>
+              {loading?'⏳ Sending...':'Send Reset Email →'}
+            </button>
+            <button onClick={()=>{setMode('login');setErr('');setMsg('')}} style={{width:'100%',padding:10,background:'transparent',border:'none',color:'rgba(255,255,255,0.7)',fontSize:13,cursor:'pointer'}}>← Back to Login</button>
+          </div>
         ) : (
+          // ── Login / Signup ──
           <>
             <div style={{display:'flex',background:'rgba(255,255,255,0.1)',borderRadius:50,padding:4,marginBottom:20}}>
               {['login','signup'].map(m=>(
-                <button key={m} onClick={()=>{setMode(m);setErr('')}} style={{flex:1,padding:10,border:'none',borderRadius:50,cursor:'pointer',fontWeight:600,background:mode===m?'white':'transparent',color:mode===m?'#333':'white',transition:'0.3s',fontFamily:'Sora'}}>
+                <button key={m} onClick={()=>{setMode(m);setErr('');setMsg('')}} style={{flex:1,padding:10,border:'none',borderRadius:50,cursor:'pointer',fontWeight:600,background:mode===m?'white':'transparent',color:mode===m?'#333':'white',transition:'0.3s',fontFamily:'Sora'}}>
                   {m==='login'?'Login':'Sign Up'}
                 </button>
               ))}
             </div>
             {mode==='signup'&&<input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="Full Name" style={inp}/>}
             <input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="Email" style={inp}/>
-            <input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()} placeholder="Password" style={inp}/>
+            <input type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()} placeholder="Password" style={{...inp,marginBottom:6}}/>
+            {mode==='login'&&(
+              <div style={{textAlign:'right',marginBottom:14}}>
+                <button onClick={()=>{setMode('forgot');setErr('');setMsg('')}} style={{background:'none',border:'none',color:'rgba(255,255,255,0.6)',fontSize:12,cursor:'pointer',textDecoration:'underline'}}>Forgot password?</button>
+              </div>
+            )}
             {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{err}</div>}
+            {msg&&<div style={{background:'rgba(67,198,172,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{msg}</div>}
             <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora'}}>
               {loading?'⏳ Please wait...':(mode==='login'?'Login →':'Create Account →')}
             </button>
