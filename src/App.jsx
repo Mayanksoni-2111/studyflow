@@ -621,34 +621,32 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children,
         </div>
       )}
 
-     <main
-  className={
-    theme === 'batman'
-      ? 'batman-bg'
-      : theme === 'barbie'
-        ? 'barbie-bg'
-        : theme === 'unicorn'
-          ? 'unicorn-bg'
-          : ''
-  }
-  style={{
-    marginLeft: isFullscreen ? 0 : 252,
-    flex: 1,
-    padding: isFullscreen ? 0 : 32,
-    minHeight: '100vh',
-
-    background:
-      theme === 'batman' ||
-      theme === 'barbie' ||
-      theme === 'unicorn'
-        ? undefined
-        : T['--bg'],
-
-    transition: 'margin-left 0.3s, padding 0.3s'
+    <main
+       className={
+         theme === 'batman'
+            ? 'batman-bg'
+            : theme === 'barbie'
+            ? 'barbie-bg'
+            : theme === 'unicorn'
+            ? 'unicorn-bg'
+             : ''
+    }
+       style={{
+         marginLeft: isFullscreen ? 0 : 252,
+         flex: 1,
+         padding: isFullscreen ? 0 : 32,
+         minHeight: '100vh',
+         background:
+          theme === 'batman' ||
+          theme === 'barbie' ||
+          theme === 'unicorn'
+            ? undefined
+            : T['--bg'],
+     transition: 'margin-left 0.3s, padding 0.3s'
   }}
 >
-  {children}
-</main>
+    {children}
+  </main>
       {showThemePicker&&<ThemePicker currentTheme={theme} onSelect={handleTheme} onClose={()=>setShowThemePicker(false)}/>}
       {showProfile&&<ProfilePanel user={user} data={data} saveD={saveD} onClose={()=>setShowProfile(false)} onNameChange={name=>{setDisplayName(name)}}/>}
     </div>
