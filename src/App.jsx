@@ -607,7 +607,7 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children,
       )}
 
       <main
-        className={theme==='batman'?'batman-bg':''}
+        className={theme==='batman'?'batman-bg':theme==='barbie'?'barbie-bg':''}        
         style={{
           marginLeft: isFullscreen ? 0 : 252,
           flex:1,
