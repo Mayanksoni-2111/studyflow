@@ -33,6 +33,17 @@ td{padding:12px 16px;font-size:14px;}
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'%3E%3Cg fill='%239c0752' opacity='0.30'%3E%3C!-- tiny heart --%3E%3Cpath d='M12 12 C9 8 4 10 5 14 C6 18 12 22 12 22 C12 22 18 18 19 14 C20 10 15 8 12 12Z'/%3E%3C!-- tiny star --%3E%3Cpath d='M43 7 L45 11 L49 11 L46 14 L47 18 L43 16 L39 18 L40 14 L37 11 L41 11Z'/%3E%3C!-- tiny bow --%3E%3Cpath d='M72 10 C68 7 65 9 66 12 C67 15 70 15 73 13 C76 15 79 14 80 11 C80 8 76 7 72 10Z M72 13 L74 18 L72 20 L70 18Z'/%3E%3C!-- tiny lipstick --%3E%3Cpath d='M27 38 L30 37 L31 40 L28 41Z M28 41 L31 40 L33 51 L29 52Z'/%3E%3C!-- tiny heel --%3E%3Cpath d='M57 38 L60 37 L65 42 L63 44 L60 41 L59 51 L56 51 L58 43Z'/%3E%3C!-- tiny heart --%3E%3Cpath d='M87 39 C84 35 80 37 81 41 C82 45 87 48 87 48 C87 48 93 45 94 41 C94 37 90 35 87 39Z'/%3E%3C!-- tiny star --%3E%3Cpath d='M17 57 L19 61 L23 61 L20 64 L21 68 L17 66 L13 68 L14 64 L11 61 L15 61Z'/%3E%3C!-- tiny bow --%3E%3Cpath d='M45 52 C42 49 39 51 40 54 C41 56 43 57 46 55 C48 57 51 56 52 54 C52 51 49 49 45 52Z M45 55 L47 60 L45 62 L43 60Z'/%3E%3C/g%3E%3Cg fill='%23b0005c' opacity='0.22'%3E%3C!-- tiny Barbie silhouette --%3E%3Cpath d='M65 57 C63 54 60 55 60 58 C60 60 62 61 64 61 L62 65 L67 65 L66 61 C68 60 69 58 68 56 C68 55 66 55 65 57Z'/%3E%3C/g%3E%3C/svg%3E");
   background-size:100px 70px;
   background-repeat:repeat;
+.unicorn-bg {
+  background-color: #fffdfd !important;
+
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180' viewBox='0 0 260 260'%3E%3Cg opacity='.78'%3E%3Cpath fill='%23ffd1df' d='M36 70c-10-14-30-2-26 12 4 14 26 27 26 27s22-13 26-27c4-14-16-26-26-12Z'/%3E%3Cpath fill='none' stroke='%239bdcff' stroke-width='6' d='M115 73q25-35 50 0'/%3E%3Cpath fill='none' stroke='%23f6a8cf' stroke-width='6' d='M119 73q21-27 42 0'/%3E%3Cpath fill='none' stroke='%23ffd86b' stroke-width='6' d='M124 73q16-19 32 0'/%3E%3Cpath fill='%23fff' stroke='%23b9b9c9' stroke-width='2.5' d='M105 78q5-10 15 0 10-10 15 0 10-10 17 0v12h-47Z'/%3E%3Cpath fill='%23b8a0e8' d='M185 42q8-15 17 0l7 16-13-4-12 5Z'/%3E%3Cpath fill='%23fff' stroke='%239d91aa' stroke-width='2.5' d='M178 65q15-22 32-3l-4 22-20 9-12-12Z'/%3E%3Cpath fill='%23f4a7cf' d='M192 62l13-8 4 10-14 6Z'/%3E%3Cpath fill='%23c8f1ff' d='M68 185l12-6 12 6-12 6Z'/%3E%3Cpath fill='%23ffe08b' d='M82 185l12-6 12 6-12 6Z'/%3E%3Cpath fill='%23d9a8f5' d='M150 174l7-13 7 13-7 13Z'/%3E%3Cpath fill='%23ffb8d2' d='M210 175c-8-10-22 0-19 10 3 10 19 20 19 20s16-10 19-20c3-10-11-20-19-10Z'/%3E%3Cpath fill='%23ffd75f' d='M43 155l3 8 9 1-7 5 2 9-7-5-8 5 3-9-7-5 9-1Z'/%3E%3C/g%3E%3C/svg%3E") !important;
+
+  /* Smaller pattern = more unicorns/rainbows visible */
+  background-size: 180px 180px !important;
+
+  background-repeat: repeat !important;
+  background-position: center top !important;
+}
 }`;document.head.appendChild(st)
 
 // ── Firebase Auth ────────────────────────────────────────────
@@ -610,19 +621,34 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children,
         </div>
       )}
 
-      <main
-        className={theme==='batman'?'batman-bg':theme==='barbie'?'barbie-bg':''}
-        style={{
-          marginLeft: isFullscreen ? 0 : 252,
-          flex:1,
-          padding: isFullscreen ? 0 : 32,
-          minHeight:'100vh',
-          background:theme==='batman'||theme==='barbie'?undefined:T['--bg'],
-          transition:'margin-left 0.3s, padding 0.3s'
-  }}>
-        {children}
-      </main>
+     <main
+  className={
+    theme === 'batman'
+      ? 'batman-bg'
+      : theme === 'barbie'
+        ? 'barbie-bg'
+        : theme === 'unicorn'
+          ? 'unicorn-bg'
+          : ''
+  }
+  style={{
+    marginLeft: isFullscreen ? 0 : 252,
+    flex: 1,
+    padding: isFullscreen ? 0 : 32,
+    minHeight: '100vh',
 
+    background:
+      theme === 'batman' ||
+      theme === 'barbie' ||
+      theme === 'unicorn'
+        ? undefined
+        : T['--bg'],
+
+    transition: 'margin-left 0.3s, padding 0.3s'
+  }}
+>
+  {children}
+</main>
       {showThemePicker&&<ThemePicker currentTheme={theme} onSelect={handleTheme} onClose={()=>setShowThemePicker(false)}/>}
       {showProfile&&<ProfilePanel user={user} data={data} saveD={saveD} onClose={()=>setShowProfile(false)} onNameChange={name=>{setDisplayName(name)}}/>}
     </div>
