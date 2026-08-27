@@ -30,89 +30,98 @@ td{padding:12px 16px;font-size:14px;}
 .batman-bg{background-color:#f0a500;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='70' viewBox='0 0 100 70'%3E%3Cg fill='%231a0800' opacity='0.55'%3E%3Cpath d='M20 28 Q10 18 2 22 Q8 24 10 28 Q6 26 4 30 Q10 28 14 32 Q12 36 14 40 Q18 34 20 36 Q22 34 26 40 Q28 36 26 32 Q30 28 36 30 Q34 26 36 22 Q28 18 20 28Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.4'%3E%3Cpath d='M72 52 Q64 44 58 47 Q63 49 64 52 Q61 51 60 54 Q65 52 68 56 Q66 59 68 62 Q71 57 72 59 Q73 57 76 62 Q78 59 76 56 Q79 52 84 54 Q83 51 84 47 Q78 44 72 52Z'/%3E%3C/g%3E%3Cg fill='%231a0800' opacity='0.3'%3E%3Cpath d='M82 12 Q76 6 72 9 Q76 10 76 13 Q74 12 73 14 Q76 13 78 16 Q77 18 78 20 Q80 17 81 18 Q82 17 84 20 Q85 18 84 16 Q86 13 90 14 Q89 11 90 8 Q86 5 82 12Z'/%3E%3C/g%3E%3C/svg%3E");background-size:100px 70px;}
 `;document.head.appendChild(st)
 
+// ── Firebase Auth ────────────────────────────────────────────
+const FB_CONFIG = {
+  apiKey: "AIzaSyDkD17vD0QnG3p-esmES2mXcOqwBAscK2w",
+  authDomain: "studyflow-65e9a.firebaseapp.com",
+  projectId: "studyflow-65e9a",
+  storageBucket: "studyflow-65e9a.firebasestorage.app",
+  messagingSenderId: "839483838329",
+  appId: "1:839483838329:web:a5e0a57e7bdf17182329a8"
+}
+if(!window.__fbLoaded){
+  window.__fbLoaded = true
+  const s1 = document.createElement('script')
+  s1.src = 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js'
+  document.head.appendChild(s1)
+  const s2 = document.createElement('script')
+  s2.src = 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js'
+  document.head.appendChild(s2)
+}
+let _fbApp = null
+function waitFirebase(){
+  return new Promise((res,rej)=>{
+    const t0=Date.now()
+    const poll=()=>{
+      if(window.firebase?.auth&&!_fbApp) _fbApp=window.firebase.initializeApp(FB_CONFIG)
+      if(_fbApp) return res(_fbApp.auth())
+      if(Date.now()-t0>8000) return rej(new Error('Firebase SDK did not load'))
+      setTimeout(poll,100)
+    }
+    poll()
+  })
+}
+
+// ── Supabase (data only) ─────────────────────────────────────
 const SUPA_URL = 'https://ocencxinawxcabsacsnp.supabase.co'
-const SUPA_KEY = 'sb_publishable_dynJCEwBsiz47pHsl0VoPg_--7YX0f1'
+const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9jZW5jeGluYXd4Y2Fic2Fjc25wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzU1NzQ1NzYsImV4cCI6MjA5MTE1MDU3Nn0.uDX_xy3NLCvz-eZO7WSLdr0bLoi1wBQRW-bI9WpNsDc'
 if(!window.__supaLoaded){
   window.__supaLoaded = true
   const s = document.createElement('script')
   s.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js'
   document.head.appendChild(s)
 }
-
-let _client = null
-function getClient(){
-  if(_client) return _client
-  if(window.supabase?.createClient){
-    _client = window.supabase.createClient(SUPA_URL, SUPA_KEY, {
-      auth:{ persistSession:true, storageKey:'sf_supa_sess' }
-    })
-  }
-  return _client
-}
-
-function waitClient(){
+let _supaClient = null
+function waitSupabase(){
   return new Promise((res,rej)=>{
-    const t0 = Date.now()
-    const poll = ()=>{
-      const c = getClient()
-      if(c) return res(c)
-      if(Date.now()-t0 > 6000) return rej(new Error('Supabase SDK did not load'))
-      setTimeout(poll, 100)
+    const t0=Date.now()
+    const poll=()=>{
+      if(!_supaClient&&window.supabase?.createClient) _supaClient=window.supabase.createClient(SUPA_URL,SUPA_KEY)
+      if(_supaClient) return res(_supaClient)
+      if(Date.now()-t0>6000) return rej(new Error('Supabase SDK did not load'))
+      setTimeout(poll,100)
     }
     poll()
   })
 }
 
 const supa = {
-  async signUp(email, password, name){
-    const c = await waitClient()
-    return c.auth.signUp({ email, password, options:{ data:{ name } } })
+  async signUp(email,password,name){
+    const auth=await waitFirebase()
+    const cred=await auth.createUserWithEmailAndPassword(email,password)
+    await cred.user.updateProfile({displayName:name})
+    return cred.user
   },
-  async signIn(email, password){
-    const c = await waitClient()
-    return c.auth.signInWithPassword({ email, password })
+  async signIn(email,password){
+    const auth=await waitFirebase()
+    const cred=await auth.signInWithEmailAndPassword(email,password)
+    return cred.user
   },
   async signOut(){
-    const c = await waitClient()
-    return c.auth.signOut()
-  },
-  async getSession(){
-    const c = await waitClient()
-    return c.auth.getSession()
-  },
-  // avatar is now included in the sync (uploadedBg is the only skipped blob)
-  async upsertData(userId, payload){
-    const c = await waitClient()
-    const { uploadedBg, ...safe } = payload
-    return c.from('user_data').upsert(
-      { user_id: userId, data: safe, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id' }
-    )
-  },
-  async fetchData(userId){
-    const c = await waitClient()
-    const { data, error } = await c.from('user_data').select('data').eq('user_id', userId).single()
-    if(error) return null
-    return data?.data || null
+    const auth=await waitFirebase()
+    return auth.signOut()
   },
   async resetPassword(email){
-  const c = await waitClient()
-  return c.auth.resetPasswordForEmail(email, {
-    redirectTo: window.location.origin + '/?reset=true',
-  })
-},
-async updatePassword(newPassword){
-  const c = await waitClient()
-  return c.auth.updateUser({ password: newPassword })
-},
-  // Patch ONLY the avatar field — reads current row, sets avatar to new value, writes back.
-  // Pass null to delete the old avatar, pass a base64 string to save a new one.
-  async patchAvatar(userId, avatarValue){
-    const c = await waitClient()
-    const { data: row, error } = await c.from('user_data').select('data').eq('user_id', userId).single()
-    if(error || !row) return
-    const merged = { ...(row.data || {}), avatar: avatarValue }
-    return c.from('user_data').update({ data: merged, updated_at: new Date().toISOString() }).eq('user_id', userId)
+    const auth=await waitFirebase()
+    return auth.sendPasswordResetEmail(email)
+  },
+  async upsertData(userId,payload){
+    const c=await waitSupabase()
+    const{uploadedBg,...safe}=payload
+    return c.from('user_data').upsert({user_id:userId,data:safe,updated_at:new Date().toISOString()},{onConflict:'user_id'})
+  },
+  async fetchData(userId){
+    const c=await waitSupabase()
+    const{data,error}=await c.from('user_data').select('data').eq('user_id',userId).single()
+    if(error) return null
+    return data?.data||null
+  },
+  async patchAvatar(userId,avatarValue){
+    const c=await waitSupabase()
+    const{data:row,error}=await c.from('user_data').select('data').eq('user_id',userId).single()
+    if(error||!row) return
+    const merged={...(row.data||{}),avatar:avatarValue}
+    return c.from('user_data').update({data:merged,updated_at:new Date().toISOString()}).eq('user_id',userId)
   },
 }
 
@@ -170,99 +179,63 @@ function AuthPage({onLogin}){
   const[msg,setMsg]=useState('')
   const[loading,setLoading]=useState(false)
   const[sdkReady,setSdkReady]=useState(false)
-  const[newPass,setNewPass]=useState('')
-  const[newPass2,setNewPass2]=useState('')
-
-  // Check if this is a password reset redirect (token in URL hash)
-  const isResetFlow = window.location.hash.includes('access_token') ||
-                      window.location.search.includes('reset=true')
 
   useEffect(()=>{
-    waitClient().then(async c => {
+    waitFirebase().then(auth=>{
       setSdkReady(true)
-      // Handle reset token in URL
-      if(window.location.hash.includes('access_token')){
-        setMode('reset')
-        return
-      }
-      const { data:{ session } } = await c.auth.getSession()
-      if(session?.user){
-        const uid = session.user.id
-        const name = session.user.user_metadata?.name || session.user.email.split('@')[0]
-        const user = { id:uid, email:session.user.email, name }
-        let d = null
-        try { d = await supa.fetchData(uid) } catch(e){}
-        const localD = getLocalCache(uid)
-        const finalD = d || (localD.courses?.length ? localD : defaultData())
-        setLocalCache(uid, finalD)
-        onLogin(user, finalD)
-      }
-    }).catch(e => setErr('Could not load Supabase SDK. Check your internet connection.'))
+      auth.onAuthStateChanged(async user=>{
+        if(user){
+          const uid=user.uid
+          const name=user.displayName||user.email.split('@')[0]
+          const u={id:uid,email:user.email,name}
+          let d=null
+          try{d=await supa.fetchData(uid)}catch(e){}
+          const localD=getLocalCache(uid)
+          const finalD=d||(localD.courses?.length?localD:defaultData())
+          setLocalCache(uid,finalD)
+          onLogin(u,finalD)
+        }
+      })
+    }).catch(()=>setErr('Could not load Firebase. Check your internet connection.'))
   },[])
 
-  const submit = async () => {
-    setErr(''); setMsg('')
+  const submit=async()=>{
+    setErr('');setMsg('')
     if(mode==='forgot'){
-      if(!form.email.trim()){ setErr('Enter your email.'); return }
+      if(!form.email.trim()){setErr('Enter your email.');return}
       setLoading(true)
-      const { error } = await supa.resetPassword(form.email.trim())
-      setLoading(false)
-      if(error) setErr(error.message)
-      else setMsg('✅ Password reset email sent! Check your inbox.')
-      return
+      try{await supa.resetPassword(form.email.trim());setMsg('✅ Reset email sent! Check your inbox.')}
+      catch(e){setErr(e.message)}
+      setLoading(false);return
     }
-    if(mode==='reset'){
-      if(!newPass || newPass.length < 6){ setErr('Password must be at least 6 characters.'); return }
-      if(newPass !== newPass2){ setErr('Passwords do not match.'); return }
-      setLoading(true)
-      const { error } = await supa.updatePassword(newPass)
-      setLoading(false)
-      if(error){ setErr(error.message); return }
-      setMsg('✅ Password updated! Logging you in...')
-      setTimeout(()=>{ window.location.href = window.location.origin }, 1500)
-      return
-    }
-    if(!form.email.trim() || !form.password.trim()){ setErr('Email and password required.'); return }
+    if(!form.email.trim()||!form.password.trim()){setErr('Email and password required.');return}
     setLoading(true)
-    try {
-      if(mode === 'signup'){
-        if(!form.name.trim()){ setErr('Name required.'); setLoading(false); return }
-        const { data, error } = await supa.signUp(form.email.trim(), form.password, form.name.trim())
-        if(error){ setErr(error.message); setLoading(false); return }
-        if(data?.session){
-          const uid = data.user.id
-          const user = { id:uid, email:data.user.email, name:form.name.trim() }
-          await supa.upsertData(uid, defaultData())
-          setLocalCache(uid, defaultData())
-          onLogin(user, defaultData())
-        } else {
-          setErr('Account created! Check your email to confirm, then log in.')
-        }
+    try{
+      if(mode==='signup'){
+        if(!form.name.trim()){setErr('Name required.');setLoading(false);return}
+        const user=await supa.signUp(form.email.trim(),form.password,form.name.trim())
+        const uid=user.uid
+        const u={id:uid,email:user.email,name:form.name.trim()}
+        await supa.upsertData(uid,defaultData())
+        setLocalCache(uid,defaultData())
+        onLogin(u,defaultData())
       } else {
-        const { data, error } = await supa.signIn(form.email.trim(), form.password)
-        if(error){ setErr(error.message); setLoading(false); return }
-        const uid = data.user.id
-        const name = data.user.user_metadata?.name || data.user.email.split('@')[0]
-        const user = { id:uid, email:data.user.email, name }
-        let cloudD = null
-        try { cloudD = await supa.fetchData(uid) } catch(e){}
-        const localD = getLocalCache(uid)
-        const finalD = cloudD || (localD.courses?.length ? localD : defaultData())
-        setLocalCache(uid, finalD)
-        onLogin(user, finalD)
+        const user=await supa.signIn(form.email.trim(),form.password)
+        const uid=user.uid
+        const name=user.displayName||user.email.split('@')[0]
+        const u={id:uid,email:user.email,name}
+        let cloudD=null
+        try{cloudD=await supa.fetchData(uid)}catch(e){}
+        const localD=getLocalCache(uid)
+        const finalD=cloudD||(localD.courses?.length?localD:defaultData())
+        setLocalCache(uid,finalD)
+        onLogin(u,finalD)
       }
-    } catch(e){
-      setErr(e?.message || 'Something went wrong. Please try again.')
-    }
+    }catch(e){setErr(e.message||'Something went wrong.')}
     setLoading(false)
   }
 
-  const inp = {
-    width:'100%', padding:'12px 14px', marginBottom:14,
-    borderRadius:12, border:'1px solid rgba(255,255,255,0.4)',
-    background:'rgba(255,255,255,0.15)', color:'#ffffff',
-    outline:'none', fontSize:15, fontWeight:500, backdropFilter:'blur(8px)',
-  }
+  const inp={width:'100%',padding:'12px 14px',marginBottom:14,borderRadius:12,border:'1px solid rgba(255,255,255,0.4)',background:'rgba(255,255,255,0.15)',color:'#ffffff',outline:'none',fontSize:15,fontWeight:500,backdropFilter:'blur(8px)'}
 
   return(
     <div style={{minHeight:'100vh',background:'linear-gradient(135deg,#667eea 0%,#764ba2 50%,#43c6ac 100%)',display:'flex',alignItems:'center',justifyContent:'center',padding:20,fontFamily:'Sora,sans-serif'}}>
@@ -272,29 +245,15 @@ function AuthPage({onLogin}){
           <h1 style={{fontSize:28,fontWeight:800}}>StudyFlow</h1>
           <p style={{fontSize:13,opacity:0.7}}>Focus • Track • Improve</p>
         </div>
-        {!sdkReady ? (
+        {!sdkReady?(
           <div style={{textAlign:'center',padding:'30px 0',opacity:0.8}}>
             <div style={{fontSize:28,marginBottom:10}}>⏳</div>
             <p style={{fontSize:14}}>Connecting to server...</p>
           </div>
-        ) : mode==='reset' ? (
-          // ── Reset password form ──
-          <div>
-            <h2 style={{fontSize:18,fontWeight:700,marginBottom:6}}>Set New Password</h2>
-            <p style={{fontSize:13,opacity:0.7,marginBottom:18}}>Enter your new password below.</p>
-            <input type="password" value={newPass} onChange={e=>setNewPass(e.target.value)} placeholder="New password (min 6 chars)" style={inp}/>
-            <input type="password" value={newPass2} onChange={e=>setNewPass2(e.target.value)} placeholder="Confirm new password" style={{...inp,marginBottom:0}} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()}/>
-            {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,margin:'14px 0',lineHeight:1.6}}>{err}</div>}
-            {msg&&<div style={{background:'rgba(67,198,172,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,margin:'14px 0',lineHeight:1.6}}>{msg}</div>}
-            <button onClick={submit} disabled={loading} style={{width:'100%',padding:14,borderRadius:50,border:'none',background:'linear-gradient(135deg,#6C63FF,#43C6AC)',color:'white',fontWeight:700,fontSize:15,cursor:loading?'not-allowed':'pointer',opacity:loading?0.75:1,fontFamily:'Sora',marginTop:14}}>
-              {loading?'⏳ Updating...':'Update Password →'}
-            </button>
-          </div>
-        ) : mode==='forgot' ? (
-          // ── Forgot password form ──
+        ):mode==='forgot'?(
           <div>
             <h2 style={{fontSize:18,fontWeight:700,marginBottom:6}}>Reset Password</h2>
-            <p style={{fontSize:13,opacity:0.7,marginBottom:18}}>Enter your email and we'll send a reset link.</p>
+            <p style={{fontSize:13,opacity:0.7,marginBottom:18}}>We'll send a reset link to your email.</p>
             <input type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} placeholder="Your email" style={inp} onKeyDown={e=>e.key==='Enter'&&!loading&&submit()}/>
             {err&&<div style={{background:'rgba(255,0,80,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{err}</div>}
             {msg&&<div style={{background:'rgba(67,198,172,0.2)',padding:'10px 14px',borderRadius:10,fontSize:13,marginBottom:15,lineHeight:1.6}}>{msg}</div>}
@@ -303,8 +262,7 @@ function AuthPage({onLogin}){
             </button>
             <button onClick={()=>{setMode('login');setErr('');setMsg('')}} style={{width:'100%',padding:10,background:'transparent',border:'none',color:'rgba(255,255,255,0.7)',fontSize:13,cursor:'pointer'}}>← Back to Login</button>
           </div>
-        ) : (
-          // ── Login / Signup ──
+        ):(
           <>
             <div style={{display:'flex',background:'rgba(255,255,255,0.1)',borderRadius:50,padding:4,marginBottom:20}}>
               {['login','signup'].map(m=>(
@@ -330,7 +288,7 @@ function AuthPage({onLogin}){
           </>
         )}
       </div>
-      <style>{`@keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} input::placeholder{color:rgba(255,255,255,0.6)}`}</style>
+      <style>{`input::placeholder{color:rgba(255,255,255,0.6)}`}</style>
     </div>
   )
 }
