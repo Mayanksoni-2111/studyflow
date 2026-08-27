@@ -607,15 +607,15 @@ function Layout({user,page,setPage,theme,setTheme,data,saveD,onSignOut,children,
       )}
 
       <main
-        className={theme==='batman'?'batman-bg':theme==='barbie'?'barbie-bg':''}        
+        className={theme==='batman'?'batman-bg':theme==='barbie'?'barbie-bg':''}
         style={{
           marginLeft: isFullscreen ? 0 : 252,
           flex:1,
           padding: isFullscreen ? 0 : 32,
           minHeight:'100vh',
-          background:theme==='batman'?undefined:T['--bg'],
+          background:theme==='batman'||theme==='barbie'?undefined:T['--bg'],
           transition:'margin-left 0.3s, padding 0.3s'
-        }}>
+  }}>
         {children}
       </main>
 
