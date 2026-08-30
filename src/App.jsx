@@ -92,7 +92,15 @@ function waitSupabase(){
   return new Promise((res,rej)=>{
     const t0=Date.now()
     const poll=()=>{
-      if(!_supaClient&&window.supabase?.createClient) _supaClient=window.supabase.createClient(SUPA_URL,SUPA_KEY)
+      if(!_supaClient&&window.supabase?.createClient){
+        _supaClient=window.supabase.createClient(SUPA_URL,SUPA_KEY,{
+          accessToken: async () => {
+            const auth = await waitFirebase()
+            const user = auth.currentUser
+            return user ? await user.getIdToken() : null
+          }
+        })
+      }
       if(_supaClient) return res(_supaClient)
       if(Date.now()-t0>6000) return rej(new Error('Supabase SDK did not load'))
       setTimeout(poll,100)
